@@ -20,5 +20,6 @@ ADRs follow the standard Michael Nygard format:
 * [`ADR-0004-implementation-language.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0004-implementation-language.md): Implementation Language Architecture (100% Rust Core with Polyglot Sandboxed Capability Plane).
 * [`ADR-0005-policy-engine.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0005-policy-engine.md): Policy and Authorization Engine Architecture (Cedar PBAC Core + AgenticOS Security Wrapper & Confirmation Broker).
 * [`ADR-0006-storage-architecture.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0006-storage-architecture.md): Storage Architecture (SQLite WAL Core, Separated Authoritative vs. Derived vs. Ephemeral State, Encrypted Secret Vault, and Content-Addressed Blobs).
+* [`ADR-0007-formal-contracts.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0007-formal-contracts.md): Formal Subsystem Contracts and Message Protocols (UDS Envelopes, Capability Invocations, Tri-State Decisions, ApprovalTokens, Error Model, and Polyglot JSON Schemas).
 
 
