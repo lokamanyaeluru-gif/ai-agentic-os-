@@ -23,6 +23,9 @@
 //! - Intent + Goal persisted, Workflow missing → reuse both, create Workflow
 //! - Full chain exists → validate consistency and return existing chain
 //!
+//! Recovery is non-destructive: the coordinator never deletes, resets, or
+//! silently overwrites existing persisted state.
+//!
 //! # Idempotency
 //!
 //! If a submission contains a `principal + idempotency_key` pair that matches
@@ -30,12 +33,26 @@
 //! creating duplicate entities. If the key matches but the raw_input differs
 //! materially, `RuntimeError::IdempotencyKeyConflict` is returned.
 //!
+//! Idempotent replays (exact content match) are NOT errors — they are indicated
+//! via `Phase1Result::is_replay = true`.
+//!
 //! # Determinism
 //!
 //! The coordinator does not use randomness for control decisions, system time
 //! inside orchestration logic, environment-dependent branching, filesystem
 //! inspection beyond the storage layer, or LLM decisions.
 //! Explicit timestamps MUST be provided by the caller.
+//!
+//! # Normalizer Recovery Compatibility
+//!
+//! When resuming an Intent that is still in `Created` state (crash between
+//! `insert` and `update`), the coordinator re-normalizes `raw_input`. This means
+//! normalizer behaviour is part of the recovery compatibility boundary: if the
+//! normalizer pattern set changes between the crash and the recovery, an
+//! IntentStatus::Created record may fail recovery. In Phase 1 this is acceptable
+//! because the normalizer patterns are immutable for the duration of the phase.
+//! Future phases must version-stamp normalized records if patterns may evolve.
+//! No speculative versioning infrastructure is introduced here.
 
 use uuid::Uuid;
 
@@ -87,8 +104,8 @@ pub struct Phase1Result {
     /// Persisted Workflow at its current lifecycle state.
     pub workflow: Workflow,
 
-    /// Whether this result was produced by replaying an existing submission
-    /// (idempotent replay) rather than creating a new chain.
+    /// `true` if this result was produced by replaying an existing submission
+    /// (same idempotency key + same raw_input) rather than creating a new chain.
     pub is_replay: bool,
 }
 
@@ -139,7 +156,8 @@ impl Phase1Runtime {
     /// If `request.idempotency_key` is `Some` and an existing Intent with the
     /// same `(principal, idempotency_key)` is found:
     ///
-    /// - **Exact retry** (same raw_input): the existing chain is resumed/returned.
+    /// - **Exact retry** (same raw_input): the existing chain is resumed/returned,
+    ///   and `Phase1Result::is_replay` is set to `true`.
     /// - **Content conflict** (different raw_input): returns
     ///   `RuntimeError::IdempotencyKeyConflict`.
     ///
@@ -176,7 +194,7 @@ impl Phase1Runtime {
                     });
                 }
 
-                // Exact retry: resume the existing chain
+                // Exact retry: resume the existing chain (is_replay = true)
                 return self.resume_from_intent(existing_intent, request.created_at_ms, true);
             }
         }
@@ -207,7 +225,7 @@ impl Phase1Runtime {
 
         self.intent_store.update(&intent)?;
 
-        // --- Step 4: Create and persist Goal ---
+        // --- Step 4: Create and persist Goal + Workflow ---
         let (goal, workflow) = self.create_goal_and_workflow(&intent, request.created_at_ms)?;
 
         Ok(Phase1Result {
@@ -233,6 +251,10 @@ impl Phase1Runtime {
     ///
     /// Returns `RuntimeError::IrreconcilableIntentState` if the Intent is in a
     /// terminal or non-resumable state without a downstream chain.
+    ///
+    /// # Non-destructive
+    ///
+    /// This method never deletes, resets, or silently overwrites persisted state.
     pub fn resume(
         &self,
         intent_id: &Uuid,
@@ -242,7 +264,7 @@ impl Phase1Runtime {
             self.intent_store
                 .get(intent_id)?
                 .ok_or_else(|| RuntimeError::InconsistentState {
-                    correlation_id: *intent_id, // best effort; real correlation_id unknown
+                    correlation_id: *intent_id, // best-effort; real correlation_id unknown
                     reason: format!("Intent {} not found in storage", intent_id),
                 })?;
 
@@ -282,22 +304,48 @@ impl Phase1Runtime {
     // -------------------------------------------------------------------------
 
     /// Core resume logic given an already-loaded Intent.
+    ///
+    /// Handles all recovery scenarios A–M from the Phase 1.2.3 specification:
+    ///
+    /// - A/B: Intent Accepted, no Goal → create Goal + Workflow
+    /// - C: Intent Created, no Goal → normalize + accept, then create Goal + Workflow
+    /// - D: Intent + Goal exist, no Workflow → create Workflow if Goal is resumable
+    /// - E: Full chain exists → validate and return
+    /// - F: Terminal Intent, no Goal → IrreconcilableIntentState
+    /// - G: Terminal Goal, no Workflow → IrreconcilableGoalState
+    /// - H: Goal → Intent ID mismatch → InconsistentState
+    /// - I: Workflow → Goal ID mismatch → InconsistentState
+    /// - J: correlation_id mismatch across chain → InconsistentState
+    /// - K: Multiple Goals or Workflows (uniqueness violation) → InconsistentState
     fn resume_from_intent(
         &self,
         intent: Intent,
         timestamp_ms: u64,
         is_replay: bool,
     ) -> Result<Phase1Result, RuntimeError> {
-        // Find existing goal for this intent
-        let existing_goals = self.goal_store.find_by_intent_id(&intent.intent_id)?;
-        let existing_goal = existing_goals.into_iter().next();
+        // Find existing goals for this intent (should be 0 or 1)
+        let mut existing_goals = self.goal_store.find_by_intent_id(&intent.intent_id)?;
+
+        // --- Scenario K: Uniqueness violation — multiple Goals for one Intent ---
+        if existing_goals.len() > 1 {
+            return Err(RuntimeError::InconsistentState {
+                correlation_id: intent.correlation_id,
+                reason: format!(
+                    "Uniqueness violation: {} goals found for intent {} (expected 0 or 1)",
+                    existing_goals.len(),
+                    intent.intent_id
+                ),
+            });
+        }
+
+        let existing_goal = existing_goals.pop();
 
         match existing_goal {
             None => {
                 // No goal yet — can we create one?
                 match intent.status {
+                    // Scenario B: Intent Accepted, Goal missing → create Goal + Workflow
                     IntentStatus::Accepted => {
-                        // Intent is accepted; create Goal and Workflow
                         let (goal, workflow) =
                             self.create_goal_and_workflow(&intent, timestamp_ms)?;
                         Ok(Phase1Result {
@@ -307,11 +355,13 @@ impl Phase1Runtime {
                             is_replay,
                         })
                     }
+                    // Scenario C: Intent Created, Goal missing → crash recovery
+                    // submit() always accepts before returning. A Created Intent with no
+                    // Goal means the process crashed between insert and update.
+                    // Re-normalize using the persisted raw_input and recover.
+                    // NOTE: The normalizer version is part of the recovery compatibility
+                    // boundary — see module-level doc comment.
                     IntentStatus::Created => {
-                        // Intent not yet accepted — this is an inconsistency:
-                        // submit() always accepts before returning, so this
-                        // only happens if the process crashed between insert
-                        // and update. Attempt to normalize and accept.
                         let mut intent = intent;
                         let normalized = normalize_intent(&intent.raw_input).map_err(|e| {
                             RuntimeError::InvalidInput {
@@ -332,6 +382,7 @@ impl Phase1Runtime {
                             is_replay,
                         })
                     }
+                    // Scenario F: Terminal Intent, Goal missing → irreconcilable
                     _ => Err(RuntimeError::IrreconcilableIntentState {
                         intent_id: intent.intent_id,
                         intent_status: format!("{:?}", intent.status),
@@ -340,13 +391,7 @@ impl Phase1Runtime {
             }
 
             Some(existing_goal) => {
-                // Goal exists — look for Workflow
-                let existing_workflows = self
-                    .workflow_store
-                    .find_by_goal_id(&existing_goal.goal_id)?;
-                let existing_workflow = existing_workflows.into_iter().next();
-
-                // Verify cross-store consistency
+                // --- Scenario H: Goal → Intent ID mismatch ---
                 if existing_goal.originating_intent_id != intent.intent_id {
                     return Err(RuntimeError::InconsistentState {
                         correlation_id: intent.correlation_id,
@@ -359,6 +404,7 @@ impl Phase1Runtime {
                     });
                 }
 
+                // --- Scenario J: correlation_id mismatch (Intent → Goal) ---
                 if existing_goal.correlation_id != intent.correlation_id {
                     return Err(RuntimeError::InconsistentState {
                         correlation_id: intent.correlation_id,
@@ -371,9 +417,28 @@ impl Phase1Runtime {
                     });
                 }
 
+                // Find existing workflows for this goal (should be 0 or 1)
+                let mut existing_workflows = self
+                    .workflow_store
+                    .find_by_goal_id(&existing_goal.goal_id)?;
+
+                // --- Scenario K: Uniqueness violation — multiple Workflows for one Goal ---
+                if existing_workflows.len() > 1 {
+                    return Err(RuntimeError::InconsistentState {
+                        correlation_id: intent.correlation_id,
+                        reason: format!(
+                            "Uniqueness violation: {} workflows found for goal {} (expected 0 or 1)",
+                            existing_workflows.len(),
+                            existing_goal.goal_id
+                        ),
+                    });
+                }
+
+                let existing_workflow = existing_workflows.pop();
+
                 match existing_workflow {
+                    // Scenario D: Intent + Goal exist, Workflow missing
                     None => {
-                        // Goal exists but no Workflow — create it if goal is resumable
                         let goal = existing_goal;
                         match goal.status {
                             GoalStatus::Accepted | GoalStatus::Created => {
@@ -388,6 +453,7 @@ impl Phase1Runtime {
                                     goal
                                 };
 
+                                // Use persisted normalized intent (preferred over re-normalizing)
                                 let normalized = intent.normalized.as_ref().ok_or_else(|| {
                                     RuntimeError::IrreconcilableGoalState {
                                         goal_id: goal.goal_id,
@@ -408,6 +474,7 @@ impl Phase1Runtime {
                                     is_replay,
                                 })
                             }
+                            // Scenario G: Terminal Goal, Workflow missing → irreconcilable
                             _ => Err(RuntimeError::IrreconcilableGoalState {
                                 goal_id: goal.goal_id,
                                 goal_status: format!("{:?}", goal.status),
@@ -415,8 +482,9 @@ impl Phase1Runtime {
                         }
                     }
 
+                    // Scenario E: Full chain exists — validate all cross-store relationships
                     Some(existing_workflow) => {
-                        // Complete chain exists — validate consistency
+                        // --- Scenario I: Workflow → Goal ID mismatch ---
                         if existing_workflow.goal_id != existing_goal.goal_id {
                             return Err(RuntimeError::InconsistentState {
                                 correlation_id: intent.correlation_id,
@@ -429,6 +497,7 @@ impl Phase1Runtime {
                             });
                         }
 
+                        // --- Scenario J: correlation_id mismatch (Workflow) ---
                         if existing_workflow.correlation_id != intent.correlation_id {
                             return Err(RuntimeError::InconsistentState {
                                 correlation_id: intent.correlation_id,
@@ -546,8 +615,9 @@ fn build_goal_objective(normalized: &crate::intent::NormalizedIntent) -> GoalObj
             )
         }
         (category, action) => {
-            // Fallback: generic objective — reached only for patterns the planner
-            // also rejects, so this is a defensive safety net.
+            // Fallback: generic objective. This arm is only reached for
+            // (category, action) pairs the planner also rejects, so this is
+            // a defensive safety net — not a silent fallback for production use.
             GoalObjective::new(
                 format!("{}/{}", category, action),
                 format!("Execute {} operation: {}", category, action),

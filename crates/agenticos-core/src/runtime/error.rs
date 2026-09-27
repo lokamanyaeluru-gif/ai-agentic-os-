@@ -40,13 +40,10 @@ pub enum RuntimeError {
     // -------------------------------------------------------------------------
     // Idempotency / deduplication
     // -------------------------------------------------------------------------
-    /// A submission with the same idempotency key and principal returned an existing intent.
-    /// This is an informational result, not an error, but typed here so callers
-    /// can distinguish "replayed submission" from "new submission".
-    #[error("Idempotent replay: existing intent {intent_id} returned without re-execution")]
-    IdempotentReplay { intent_id: Uuid },
-
     /// An idempotency key was reused with materially different raw_input content.
+    ///
+    /// Idempotent replays (same key + same content) are NOT errors — they are
+    /// surfaced as `Phase1Result { is_replay: true }` from the successful result.
     #[error(
         "Idempotency key conflict: key '{idempotency_key}' was previously submitted with \
          different raw_input (existing intent {existing_intent_id})"
@@ -78,7 +75,8 @@ pub enum RuntimeError {
     IrreconcilableGoalState { goal_id: Uuid, goal_status: String },
 
     /// The persisted state is internally inconsistent (e.g. goal does not reference
-    /// the expected intent, or IDs are mismatched). Operator intervention required.
+    /// the expected intent, IDs are mismatched, or the uniqueness invariant is violated).
+    /// Operator intervention required.
     #[error("Inconsistent persisted state: {reason} (correlation_id: {correlation_id})")]
     InconsistentState {
         correlation_id: Uuid,
@@ -101,9 +99,6 @@ impl From<RuntimeError> for ErrorPayload {
                 (ErrorCode::InvalidRequest, RetryClassification::Never)
             }
             RuntimeError::DomainViolation(_) => {
-                (ErrorCode::InvalidRequest, RetryClassification::Never)
-            }
-            RuntimeError::IdempotentReplay { .. } => {
                 (ErrorCode::InvalidRequest, RetryClassification::Never)
             }
             RuntimeError::IdempotencyKeyConflict { .. } => {
