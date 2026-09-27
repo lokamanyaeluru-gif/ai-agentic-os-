@@ -1,0 +1,17 @@
+[package]
+name = "agenticos-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core domain models and state machines for AI Agentic OS (Phase 1)"
+
+[dependencies]
+agenticos-contracts = { path = "../agenticos-contracts" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
