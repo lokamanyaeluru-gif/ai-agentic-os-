@@ -73,21 +73,26 @@ An AI agent may formulate and request an action, but a deterministic, auditable 
 
 ## 3. Target Execution Path
 
-Every user interaction traverses a deterministic, observed pipeline:
+Every user interaction traverses a deterministic, observed pipeline across explicit architectural boundaries:
 
 1. **User**: Provides natural language, voice, or contextual intent.
-2. **Human Interface**: Captures multimodal input and renders progress, diffs, and confirmation prompts.
-3. **Intent Intelligence**: Translates human input into a formal, structured `Intent` representation.
-4. **Goal Runtime**: Binds intent into an explicit, verifiable `Goal` with acceptance criteria.
-5. **Workflow Runtime**: Decomposes the goal into a directed, observable `Workflow` of tasks.
-6. **Global Agent Manager**: Allocates specialized worker agents to tasks with least-privilege scoping.
-7. **Agent Runtime**: Coordinates agent reasoning steps, context management, and capability requests.
-8. **Knowledge / Capability**: Agent requests capabilities (e.g., File System, Process, Network) via the registry.
-9. **Security Policy Engine**: Evaluates capability invocations (`ALLOW`, `DENY`, `CONFIRM`).
-10. **Application or System Service**: Sandboxed capability executes against host OS APIs or services.
-11. **Linux**: Host kernel performs POSIX/system calls and interacts with hardware.
-12. **Verification**: Post-execution assertion verifies that the system state matches the goal criteria.
-13. **Result**: Structured outcome is logged to audit storage and communicated to the user.
+2. **Human Interface (Layer 1)**: Captures multimodal input and renders progress, diffs, and confirmation prompts.
+3. **Intent Intelligence (Layer 2)**: Translates human input into a formal, structured `Intent` representation.
+4. **Goal Runtime (Layer 3)**: Binds intent into an explicit, verifiable `Goal` with acceptance criteria.
+5. **Workflow Runtime (Layer 4)**: Decomposes the goal into a directed, observable `Workflow` of tasks.
+6. **Global Agent Manager (Layer 5)**: Allocates specialized worker agents to tasks with least-privilege scoping.
+7. **Agent Runtime (Layer 6)**: Coordinates agent reasoning steps, context management, and capability requests.
+8. **Knowledge & Memory (Layer 7)**: Provides episodic context, workspace state, and capability schemas.
+9. **Security Policy Engine (Layer 8)**: Evaluates capability invocations deterministically (`ALLOW`, `DENY`, `CONFIRM`).
+10. **Sandboxed Capability Runner (Layer 9)**: Executes approved actions in isolated sandbox processes (sandbox engine TBD in Phase 0.3).
+11. **Linux Integration Boundary (Layer 10)**: Mediates validated capability requests across the AgenticOS-to-Linux boundary into host system calls or services.
+12. **Linux Host OS**: Kernel primitives execute scheduling, memory management, POSIX filesystem operations, and driver control.
+13. **Hardware (Layer 13)**: Physical CPU, memory, storage controllers, and peripherals execute instructions and persist changes (lowest layer below Linux).
+14. **Verification Subsystem**: Post-execution assertion verifies physical system state matches goal criteria.
+15. **Observability & Reliability (Layer 12)**: Append-only audit events, distributed traces, and execution metrics recorded under persistent correlation IDs.
+16. **Result**: Final verification status and feedback returned to the user via the Human Interface.
+
+*(In parallel, **Kernel & System Intelligence (Layer 11)** continuously monitors host OS health, memory pressure, and kernel telemetry to safeguard execution.)*
 
 ---
 
@@ -106,7 +111,7 @@ AI Agentic OS is developed under strict phase gates:
 1. **Small, Atomic Phases**: Every increment is narrowly scoped and verified before progressing.
 2. **Deterministic Pre-flight Verification**: No phase is considered complete without meeting all gate criteria.
 3. **Local Git Checkpoints**: Clean, descriptive, atomic commits record every milestone.
-4. **Zero Implicit Privilege**: Every capability is explicitly declared, bound to a manifest, and sandboxed.
+4. **Zero Implicit Privilege**: Every capability is explicitly declared, bound to a manifest, and requires mandatory sandboxing (sandbox technology selection TBD in Phase 0.3).
 5. **No Automatic System Mutations**: Boot records, partitions, host OS configurations, and core system files are read-only to agent runtimes unless explicitly granted by human confirmation through isolated maintenance modes.
 
 ---
@@ -115,7 +120,7 @@ AI Agentic OS is developed under strict phase gates:
 
 Comprehensive system specifications are organized within `docs/`:
 
-* [`docs/architecture.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/architecture.md): Deep architectural breakdown, component boundaries, conceptual data contracts (Intent, Goal, Workflow, Capability, etc.), and the end-to-end "Create a folder called Project in Documents" example trace.
+* [`docs/architecture.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/architecture.md): Deep architectural breakdown across 13 major layers, component boundaries, conceptual data contracts (Intent, Goal, Workflow, Capability, etc.), and the end-to-end "Create a folder called Project in Documents" example trace.
 * [`docs/security.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/security.md): Security principles, permission models (`ALLOW`, `DENY`, `CONFIRM`), capability sandboxing, human confirmation mechanisms, audit logging, and external project evaluation standards.
 * [`docs/threat-model.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/threat-model.md): Detailed threat matrix covering prompt injection, tool tampering, arbitrary execution, privilege escalation, runaway agent loops, and supply-chain threats.
 * [`docs/development.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/development.md): Development methodology, verification gates, coding constraints, Git checkpointing rules, and Phase roadmap.

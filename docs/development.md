@@ -67,7 +67,7 @@ Building an AI-native operating system abstraction layer requires rigorous engin
 * **Phase 0.2 (Current)**: Foundational architecture, security model, preliminary threat model, development governance, and conceptual contracts. No executable code.
 * **Phase 0.3 (Next)**: Formalization of JSON Schemas for all core contracts (`Intent`, `Goal`, `Workflow`, `Agent`, `Capability`, `PermissionDecision`, `AuditEvent`, `StructuredError`, `VerificationResult`). Pure validation tests.
 * **Phase 0.4**: Implementation of the deterministic Policy & Permission Engine in pure, isolated code. Rule evaluation for `ALLOW`, `DENY`, and `CONFIRM`.
-* **Phase 1.0**: Minimal capability execution harness with Linux process isolation (Landlock / seccomp / namespaces). Execution of mock capabilities without network or shell access.
+* **Phase 1.0**: Minimal capability execution harness with Linux process isolation (sandboxing is mandatory; specific technology decided in Phase 0.3). Execution of mock capabilities without network or shell access.
 * **Phase 1.1**: Realization of the first safe filesystem capabilities (`fs.inspect_metadata`, `fs.create_directory`, `fs.read_file`) with end-to-end verification assertions.
 * **Phase 1.2**: Workflow DAG engine, agent lifecycle management, and structured audit logging.
 * **Phase 2.0**: Integration with local neural models (e.g., via Ollama/llama.cpp) for intent parsing, accompanied by interactive desktop confirmation prompts.
@@ -83,7 +83,7 @@ To complete Phase 0.2 and prepare for Phase 0.3, the following verification chec
 - [x] **No System Modifications**: No package installations, boot changes, or partition edits occurred.
 - [x] **Documentation Integrity**:
   - [x] `README.md` created with project purpose, layers, and navigation.
-  - [x] `docs/architecture.md` created with boundaries, 12 layers, 9 conceptual contracts, and end-to-end "Create a folder called Project in Documents" example trace.
+  - [x] `docs/architecture.md` created with boundaries, 13 layers, 9 conceptual contracts, and end-to-end "Create a folder called Project in Documents" example trace.
   - [x] `docs/security.md` created with deterministic authorization model, capability risk tiers, and external project evaluation standards.
   - [x] `docs/threat-model.md` created with 10 threat categories, STRIDE mapping, and mitigations.
   - [x] `docs/development.md` created with 7 core rules and roadmap.

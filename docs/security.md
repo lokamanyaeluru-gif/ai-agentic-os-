@@ -84,10 +84,9 @@ Privileges are associated with unforgeable, scoped capabilities rather than ambi
 * Resource limits (max execution time, max memory, max read buffer).
 
 ### 3.3. Workspace Isolation & Sandboxing
-Every capability execution occurs within an isolated sandbox environment. Depending on the capability's risk tier:
-* **Filesystem Isolation**: Mount namespaces, Landlock LSM rules, or read-only binds restrict the capability from observing or mutating unrelated parts of the filesystem.
-* **Syscall Filtering**: Seccomp-BPF filters block dangerous system calls (e.g., `ptrace`, `chroot`, `mount`, `reboot`).
-* **Network Isolation**: Network namespaces with loopback-only or completely detached network stacks prevent covert data exfiltration.
+Sandboxing is a **mandatory architectural requirement** for all capability execution. Direct, un-sandboxed execution of capabilities is strictly prohibited.
+* **Mandatory Isolation**: Capabilities must execute within strictly constrained boundaries, enforcing filesystem access restrictions, system call filtering, and network isolation to prevent unauthorized state changes or data exfiltration.
+* **Implementation Status**: While the requirement for robust sandbox isolation is mandatory and absolute, the specific sandboxing technology and implementation primitives (e.g., evaluating Bubblewrap, Landlock LSM + seccomp-bpf, Linux namespaces + cgroups v2, or systemd dynamic users) remain **TBD until Phase 0.3**.
 
 ### 3.4. Three-Tier Decision Engine: ALLOW, DENY, CONFIRM
 Every capability request is mapped to one of three verdicts:
@@ -148,8 +147,8 @@ Before any third-party code, package, or repository is introduced in subsequent 
 |                       EXTERNAL COMPONENT VETTING PIPELINE                     |
 +-------------------------------------------------------------------------------+
   1. LICENSE EVALUATION
-     - Permissive open-source license (MIT, Apache 2.0, BSD-3-Clause, ISC).
-     - No incompatible, viral (e.g., strict AGPL where unneeded), or proprietary terms.
+     - License compatibility must be reviewed before integration to ensure full compliance with system architecture, distribution models, and long-term usage obligations.
+     - Review all terms to prevent introducing conflicting licensing obligations or incompatible constraints.
   2. MAINTENANCE & REPUTATION
      - Active project governance, regular release cadence, responsive maintainers.
      - No abandoned codebases, unaddressed security issues, or single-maintainer risks.

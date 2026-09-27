@@ -10,6 +10,8 @@
 
 **AI Agentic OS** provides an intelligent, deterministic control plane situated above the traditional **Linux / Ubuntu** operating system. The system translates high-level human objectives into verifiable, policy-governed computational actions executed by sandboxed, specialized agents.
 
+The architecture is structured into **13 major architectural layers**, establishing a rigorous hierarchy from the top-level Human Interface down to physical Hardware, with an explicit boundary between AI Agentic OS and host Linux:
+
 ```
 +-----------------------------------------------------------------------------------+
 |                                  USER / HUMAN                                     |
@@ -53,32 +55,46 @@
                  |                                                   ^
                  v                                                   |
 +------------------------------------+             +--------------------------------+
-|     7. KNOWLEDGE & MEMORY LAYER    |             |   11. OBSERVABILITY LAYER      |
-|  Episodic Context | Semantic Store |             |  Telemetry | Traces | Audit Log|
+|     7. KNOWLEDGE & MEMORY LAYER    |             | 12. OBSERVABILITY & RELIABILITY|
+|  Episodic Context | Semantic Store |             |  Audit Log | Traces | Telemetry|
 +------------------------------------+             +--------------------------------+
-                 |
-                 v
-+-----------------------------------------------------------------------------------+
-|                      8. SECURITY & GOVERNANCE LAYER (GATEWAY)                     |
-|  Capability Registry | Policy/Permission Engine | Rule Evaluator (ALLOW/DENY/CONFIRM)|
-+-----------------------------------------------------------------------------------+
+                 |                                                   ^
+                 v                                                   |
++-------------------------------------------------------------------+|
+|                      8. SECURITY & GOVERNANCE LAYER (GATEWAY)     ||
+|  Capability Registry | Policy/Permission Engine | (ALLOW/DENY/CONFIRM)
++-------------------------------------------------------------------+
                                          | (ALLOW / CONFIRM approved)
                                          v
 +-----------------------------------------------------------------------------------+
 |                       9. CAPABILITY LAYER (SANDBOX RUNNER)                        |
-|  Isolated Process Namespaces | Landlock/Seccomp | Strict Posix Capabilities       |
+|   Sandboxing is Mandatory | Isolation Implementation TBD (Decided in Phase 0.3)   |
 +-----------------------------------------------------------------------------------+
                                          |
                                          v
+======================== AGENTICOS-TO-LINUX EXPLICIT BOUNDARY =======================
 +-----------------------------------------------------------------------------------+
-|                     10. APPLICATIONS & SYSTEM SERVICES LAYER                      |
-|       D-Bus Services | CLI Utilities | GUI Desktop Integrations | System Daemons  |
+|                  10. LINUX INTEGRATION & SYSTEM SERVICES LAYER                    |
+|   D-Bus Mediators | Systemd Service Adapters | Desktop Portals | IPC Bridges      |
 +-----------------------------------------------------------------------------------+
+                 |                                                   ^
+                 v                                                   |
++--------------------------------------------------------------------+--------------+
+|                          HOST OPERATING SYSTEM: LINUX / UBUNTU                    |
+| Kernel Primitives | Scheduling | Virtual Memory | POSIX Filesystem | Drivers      |
++--------------------------------------------------------------------+--------------+
+                 |                                                   ^
+                 | (Monitors OS Health & Kernel Logs)                |
+                 +---------------------------------->+---------------+--------------+
+                                                     | 11. KERNEL INTELLIGENCE      |
+                                                     | Health Telemetry | eBPF Feeds|
+                                                     +------------------------------+
                                          |
                                          v
+================================ HARDWARE BOUNDARY ==================================
 +-----------------------------------------------------------------------------------+
-|                       12. LINUX BASE OS & HARDWARE LAYER                          |
-| Kernel Primitives | POSIX FS | Memory Management | Network Devices | Physical HW  |
+|                              13. HARDWARE LAYER                                   |
+| Physical CPU | System RAM | Non-Volatile Storage | Peripheral Devices & Busses    |
 +-----------------------------------------------------------------------------------+
 ```
 
@@ -91,54 +107,57 @@ A primary design rule of AI Agentic OS is the strict separation of concerns and 
 | Boundary Domain | What It Owns | What It Is Strictly Prohibited From Doing |
 | :--- | :--- | :--- |
 | **Linux (Host OS)** | Kernel primitives, process scheduling, POSIX file permissions, physical memory mapping, network socket handling, hardware drivers. | Making autonomous agentic decisions, interpreting natural language prompts. |
-| **AI Agentic OS** | Intent translation, goal tracking, task graph management, permission policy enforcement, capability sandboxing, and execution verification. | Bypassing Linux kernel security mechanisms, executing raw unvetted commands as root. |
+| **Hardware** | Physical execution of machine instructions, volatile RAM, non-volatile block storage, physical buses, hardware security modules. | Direct autonomous software orchestration without operating system mediation. (Lowest layer below Linux). |
+| **AI Agentic OS** | Intent translation, goal tracking, task graph management, permission policy enforcement, capability sandboxing, and execution verification. | Bypassing Linux kernel security mechanisms, executing raw unvetted commands as root, or owning host kernel primitives. |
+| **Linux Integration Boundary (Layer 10)** | Mediating interactions between sandboxed capabilities and host Linux desktop/system services (D-Bus, systemd user services, portals). | Exposing raw kernel interfaces or unmediated root privileges to agents. |
+| **Kernel Intelligence (Layer 11)** | Passive observation of host health, kernel logs, thermal status, and resource pressure to advise agent runtimes. | Modifying kernel data structures, altering kernel scheduling, or executing kernel functions. |
+| **Observability & Reliability (Layer 12)** | Append-only audit logs, execution traces, metric aggregation, anomaly detection, structured errors, and state verification. | Modifying execution paths, altering payloads, or exposing sensitive credentials. |
 | **Agents** | Task-specific problem solving, reasoning within granted scope, proposing actions via formal capability calls. | Directly calling shell interpreters (`/bin/bash`), bypassing the policy engine, self-granting permissions. |
 | **Capabilities** | Atomic, deterministic, isolated operations (e.g., `fs.create_directory`, `process.spawn_sandboxed`). | Maintaining arbitrary state, executing outside declared sandbox constraints. |
 | **Applications** | User-facing productivity software, background utilities, desktop applications. | Arbitrarily intercepting agent system buses without explicit capability registration. |
 | **Security Layer** | Deterministic rule evaluation (`ALLOW`, `DENY`, `CONFIRM`), session credential management, token minting. | Generating creative or heuristic outputs; must be 100% deterministic and auditable. |
-| **Observability** | Append-only audit logs, execution traces, metric aggregation, anomaly detection. | Modifying execution paths, altering payloads, or exposing sensitive credentials. |
 
 ---
 
 ## 3. Layer-by-Layer Architectural Decomposition
 
-### 3.1. Human Interface Layer
+### 3.1. Layer 1: Human Interface Layer
 * **Role**: Primary bidirectional interface between human user and AI Agentic OS.
 * **Capabilities**: Ingests natural language commands, structured form inputs, voice, and system events. Displays execution status, step-by-step task progress, unified diffs, and confirmation prompts requiring explicit user sign-off.
 * **Boundaries**: Strictly non-privileged; passes captured intent to the Intent Intelligence Layer.
 
-### 3.2. Intent Intelligence Layer
+### 3.2. Layer 2: Intent Intelligence Layer
 * **Role**: Extracts structured semantic intent from unstructured inputs.
 * **Capabilities**: Identifies target entities (paths, applications, configurations), classifies operations (read, write, mutate, execute), identifies missing parameters, and surfaces ambiguity back to the user before goal generation.
 * **Contract Output**: Produces a validated `IntentContract`.
 
-### 3.3. Goal Runtime Layer
+### 3.3. Layer 3: Goal Runtime Layer
 * **Role**: Converts semantic intent into a verifiable, deterministic goal.
 * **Capabilities**: Defines exact pre-conditions (e.g., parent directory must exist) and post-conditions (e.g., directory must exist with specific permissions). Tracks goal lifecycle (`PENDING`, `IN_PROGRESS`, `VERIFYING`, `COMPLETED`, `FAILED`).
 * **Contract Output**: Produces a `GoalContract`.
 
-### 3.4. Workflow Runtime Layer
+### 3.4. Layer 4: Workflow Runtime Layer
 * **Role**: Decomposes goals into a Directed Acyclic Graph (DAG) of discrete tasks.
 * **Capabilities**: Handles task dependencies, parallel step execution, rollback pathways, and failure recovery policies. Ensures idempotent execution where possible.
 * **Contract Output**: Produces a `WorkflowContract`.
 
-### 3.5. Global Agent Manager Layer
+### 3.5. Layer 5: Global Agent Manager Layer
 * **Role**: Orchestrates agent lifecycle, resource utilization, and specialization.
 * **Capabilities**: Provisions specialized subagents (e.g., `FileAgent`, `GitAgent`, `NetworkAgent`), enforces agent execution timeouts, limits memory/CPU allocations, and binds each agent to a least-privilege capability scope.
 
-### 3.6. Agent Runtime Layer
+### 3.6. Layer 6: Agent Runtime Layer
 * **Role**: Execution environment where specialized agents perform reasoning and task progression.
 * **Capabilities**: Manages agent working memory, tracks step budgets, maintains context windows, and emits capability invocation requests to the Security Layer.
 * **Constraint**: Agents **cannot** invoke system syscalls or shell commands directly; they may only emit `CapabilityInvocationRequest` payloads.
 
-### 3.7. Knowledge & Memory Layer
+### 3.7. Layer 7: Knowledge & Memory Layer
 * **Role**: Provides contextual state, system metadata, and long-term memory.
 * **Components**:
   * *Episodic Memory*: Session-specific history of actions, outcomes, and user preferences.
   * *Workspace State*: Current active directory, project context, Git status, and active configuration.
   * *System Schema*: Map of available capabilities, installed applications, and system capabilities.
 
-### 3.8. Security & Governance Layer (Policy/Permission Engine)
+### 3.8. Layer 8: Security & Governance Layer (Policy/Permission Engine)
 * **Role**: The non-negotiable security firewall of the operating system.
 * **Responsibilities**:
   * Evaluates every `CapabilityInvocationRequest` against security policies.
@@ -146,26 +165,33 @@ A primary design rule of AI Agentic OS is the strict separation of concerns and 
   * Yields one of three deterministic verdicts: `ALLOW`, `DENY`, or `CONFIRM`.
   * Emits tamper-evident `AuditEvent` records for all evaluation events.
 
-### 3.9. Capability Layer (Sandboxed Execution)
-* **Role**: Provides safe, deterministic implementation of concrete system operations.
-* **Implementation Details**:
-  * Capabilities are discrete, typed modules implementing explicit schemas.
-  * Execution occurs within restricted POSIX namespaces, seccomp filters, and Landlock access control profiles.
-  * Never exposes an arbitrary `exec(string)` primitive.
+### 3.9. Layer 9: Capability Layer (Sandboxed Execution)
+* **Role**: Provides safe, deterministic implementation and execution of concrete system operations.
+* **Mandatory Sandboxing Requirement**: Sandboxing is a strict, mandatory architectural requirement for all capability execution. Running un-sandboxed capabilities is strictly prohibited.
+* **Implementation Status**: While the requirement for process, filesystem, and system call isolation is mandatory, the specific sandboxing technology (evaluating Bubblewrap, Landlock LSM + seccomp-bpf, Linux namespaces + cgroups v2, or lightweight containers) remains **TBD until Phase 0.3**.
+* **Contract Rule**: Capabilities are discrete, typed modules implementing explicit schemas; they never expose an arbitrary `exec(string)` shell primitive.
 
-### 3.10. Applications & System Services Layer
-* **Role**: Integration points with Linux desktop services (e.g., systemd, D-Bus, PulseAudio/PipeWire, NetworkManager, Wayland).
-* **Isolation**: All interactions are mediated through sandboxed capability adapters.
+### 3.10. Layer 10: Linux Integration Layer (AgenticOS-to-Linux Boundary & System Services)
+* **Role**: The explicit architectural mediation boundary separating AI Agentic OS from the host Linux operating system.
+* **Integration Points**: Adapts sandboxed capability requests to user-space Linux services, D-Bus session/system buses, systemd user services, desktop portals (Wayland / FreeDesktop), and POSIX system APIs.
+* **Boundary Invariant**: AI Agentic OS does **not** own or replace Linux kernel primitives. Linux remains strictly authoritative for kernel execution, process scheduling, memory allocation, device drivers, network sockets, and POSIX filesystem operations.
 
-### 3.11. Observability & Reliability Layer
-* **Role**: Complete system transparency, auditability, and error handling.
+### 3.11. Layer 11: Kernel & System Intelligence Layer
+* **Role**: Distinct architectural responsibility providing continuous, proactive insight into host operating system health, resource consumption, and kernel states.
+* **Capabilities**: Ingests host telemetry from unprivileged inspection interfaces (e.g., `/proc`, `/sys`, system logs, unprivileged eBPF telemetry). Detects out-of-memory pressure, disk exhaustion, thermal throttling, and hardware bottlenecks to advise the Global Agent Manager and Agent Runtime before task scheduling.
+* **Boundary Invariant**: Strictly observational and analytical; does not alter kernel primitives, modify kernel memory, or usurp Linux scheduling.
+
+### 3.12. Layer 12: Observability & Reliability Layer
+* **Role**: Distinct architectural responsibility ensuring total system auditability, non-repudiation, deterministic verification, and safe error recovery.
 * **Features**:
-  * Append-only local structured audit log.
-  * Correlation IDs tracing user intent down to individual capability syscalls.
-  * Structured error reporting providing root-cause analysis without leaking credentials.
+  * Append-only local structured audit log with tamper-evident formatting.
+  * Correlation IDs tracing high-level user intent down to atomic capability invocations and verification checks.
+  * Structured error reporting (`StructuredErrorContract`) providing root-cause diagnostic context without leaking credentials.
+  * Independent state verification engines asserting physical postconditions against declared goal criteria.
 
-### 3.12. Kernel & System Intelligence
-* **Role**: Monitors host OS health, thermal status, memory pressure, and system logs to provide proactive feedback into the agent runtime.
+### 3.13. Layer 13: Hardware Layer
+* **Role**: Physical hardware and execution substrate operating as the lowest layer beneath the host Linux operating system.
+* **Responsibilities**: Physical CPU execution cores, volatile RAM, non-volatile block storage devices (NVMe/SSD/HDD), physical network controllers, and hardware peripheral buses. Hardware access is strictly mediated by the Linux kernel.
 
 ---
 
@@ -350,10 +376,11 @@ The interfaces below represent the conceptual contracts governing inter-componen
     }
   },
   "sandbox_requirements": {
+    "sandboxing_mandatory": true,
     "requires_network": false,
     "requires_root": false,
     "filesystem_access": "RESTRICTED_WRITE",
-    "seccomp_filter": "default_fs_minimal"
+    "isolation_engine_selection": "TBD_PHASE_0_3"
   }
 }
 ```
@@ -513,19 +540,26 @@ The interfaces below represent the conceptual contracts governing inter-componen
   - Emits AuditEvent(aud-12345678).
                           |
                           v
-         [8. Sandboxed Capability Runner]
-  - Capability `fs.create_directory` is spawned inside an isolated sandbox process.
-  - Filesystem namespace constrained to user home with Landlock / seccomp profile.
-  - Invokes POSIX `mkdir(2)` with path `/home/lokamanya/Documents/Project` and mode `0755`.
+         [8. Sandboxed Capability Runner (Layer 9)]
+  - Capability `fs.create_directory` is prepared for execution within an isolated sandbox (sandboxing is mandatory; specific engine TBD in Phase 0.3).
+  - Sandbox constraints enforce restricted filesystem write access bounded to the authorized workspace path.
                           |
                           v
-              [9. Linux Base OS / FS]
-  - Linux kernel performs inode allocation on ext4/btrfs filesystem.
-  - Verifies POSIX user permissions (uid=lokamanya).
-  - Creates directory entry and returns success (`0`).
+  === Crosses AgenticOS-to-Linux Boundary (Layer 10: Linux Integration) ===
+  - Capability invocation bridges across Layer 10 to issue POSIX `mkdir(2)` system call to host Linux.
                           |
                           v
-         [10. Verification Subsystem]
+                [Host Operating System: Linux]
+  - Linux kernel handles `mkdir(2)` system call, verifies POSIX user permissions (uid=lokamanya).
+  - Kernel filesystem driver (ext4/btrfs) allocates directory inode and writes directory entry.
+  - Kernel & System Intelligence (Layer 11) passively observes filesystem telemetry (free space, inode quotas) without interfering with kernel operations.
+                          |
+                          v
+         [Hardware Layer (Layer 13 - Lowest Layer Below Linux)]
+  - Physical NVMe/SATA storage controller commits directory metadata changes to physical non-volatile storage.
+                          |
+                          v
+              [Verification Subsystem]
   - Evaluates Postconditions:
       1. Calls `stat(2)` on `/home/lokamanya/Documents/Project`.
       2. Asserts `S_ISDIR(st_mode)` is true.
@@ -533,8 +567,11 @@ The interfaces below represent the conceptual contracts governing inter-componen
   - Produces VerificationResultContract: `is_satisfied: true`.
                           |
                           v
-        [11. Human Interface & Audit Store]
-  - Final AuditEvent logged with correlation ID.
+     [Observability & Reliability Layer (Layer 12)]
+  - Final AuditEvent logged with correlation ID, execution duration, and verification proof.
+                          |
+                          v
+            [Human Interface (Layer 1)]
   - User receives confirmation: "Folder 'Project' successfully created in Documents."
 ```
 

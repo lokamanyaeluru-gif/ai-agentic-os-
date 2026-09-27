@@ -43,7 +43,7 @@ The threat model of AI Agentic OS protects six primary system assets:
                                       v
 +----------------------------------------------------------------------------+
 | SANDBOXED CAPABILITY WORKERS                                               |
-| Landlock / Seccomp / Restricted Namespaces                                 |
+| Mandatory Sandboxing (Isolation Primitives TBD in Phase 0.3)               |
 +----------------------------------------------------------------------------+
                                       |
                               [Trust Boundary 4: POSIX KERNEL]
@@ -89,7 +89,7 @@ The threat model of AI Agentic OS protects six primary system assets:
 * **Deterministic Mitigations**:
   * **Zero Shell Execution**: Shell interpreters (`/bin/sh`, `/bin/bash`, `/bin/zsh`) are completely prohibited in standard execution paths.
   * **Atomic POSIX APIs**: Actions are executed via direct library/system calls (`mkdir(2)`, `open(2)`, `rename(2)`), bypassing shell parsing completely.
-  * **Seccomp Syscall Filtering**: Workers are restricted from calling `execve` with unauthorized binaries.
+  * **Syscall Filtering & Sandboxing**: Workers are restricted from calling unauthorized binaries or dangerous system calls via mandatory sandboxing (exact implementation TBD in Phase 0.3).
 
 ### 2.5. Secret Exposure
 * **Threat Description**: Leakage of private SSH keys, GPG keys, tokens, or personal identifiers into agent context windows, audit logs, or error messages.
@@ -146,10 +146,10 @@ The threat model of AI Agentic OS protects six primary system assets:
 | :--- | :--- | :--- | :--- | :--- |
 | **TH-01** | Indirect Prompt Injection | Agent Reasoning | HIGH | Untrusted data tagging; deterministic policy engine; no direct shell access |
 | **TH-02** | Path Traversal (`../..`) | Filesystem Integrity | CRITICAL | Canonicalization via `realpath`; strict workspace path boundary checks |
-| **TH-03** | Arbitrary Shell Execution | Operating System | CRITICAL | Prohibition of shell binaries; typed capability calls; seccomp filtering |
+| **TH-03** | Arbitrary Shell Execution | Operating System | CRITICAL | Prohibition of shell binaries; typed capability calls; mandatory sandboxing (engine TBD in Phase 0.3) |
 | **TH-04** | Privilege Escalation (sudo) | Host Kernel / Root | CRITICAL | Non-root runtime execution; capability dropping; zero sudo usage |
 | **TH-05** | Credential Theft (`.ssh`) | Private Secrets | CRITICAL | Hardcoded blacklisted paths; token redaction filter; credential isolation |
-| **TH-06** | Symlink Exploitation / TOCTOU | Host Files | HIGH | `O_NOFOLLOW` flag; atomic file descriptors (`openat`); Landlock sandbox |
+| **TH-06** | Symlink Exploitation / TOCTOU | Host Files | HIGH | `O_NOFOLLOW` flag; atomic file descriptors (`openat`); mandatory sandbox filesystem restriction (engine TBD in Phase 0.3) |
 | **TH-07** | Agent Recursion / Storm | System Resources | MEDIUM | Task step limits; execution timeouts; circuit breakers |
 | **TH-08** | Supply-Chain Infiltration | Source Code Base | HIGH | No Phase 0.2 external dependencies; formal vetting pipeline; hash pinning |
 | **TH-09** | Hallucinatory State Mutation | User Data | HIGH | Pre/Post-condition verification gates; explicit human `CONFIRM` for mutations |
