@@ -15,3 +15,5 @@ ADRs follow the standard Michael Nygard format:
 
 ## Index of Decisions
 * [`ADR-0001-local-only-and-deterministic-security.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0001-local-only-and-deterministic-security.md): Foundation of local-only operation and deterministic policy enforcement over agent actions.
+* [`ADR-0002-ipc-architecture.md`](file:///home/lokamanya/AI%20Agentic%20OS/docs/decisions/ADR-0002-ipc-architecture.md): IPC Architecture for Internal Subsystems (Unix Domain Sockets) and Linux Desktop Integration (Layer 10 D-Bus).
+
