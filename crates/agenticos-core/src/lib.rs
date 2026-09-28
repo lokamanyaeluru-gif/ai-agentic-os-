@@ -14,6 +14,7 @@ pub mod execution;
 pub mod goal;
 pub mod intent;
 pub mod normalizer;
+pub mod policy;
 pub mod runtime;
 pub mod storage;
 pub mod workflow;
@@ -28,6 +29,14 @@ pub use agent::{
     HeartbeatMonitor, HeartbeatRecord, LinuxProcfsObserver, ManagerConfig, MockProcessObserver,
     ProcessIdentity, ProcessLiveness, ProcessObserver, ReconciliationReport, RestartPolicy,
     UnknownProcessObserver, WorkAssignment,
+};
+
+// Re-export policy evaluation plane (Phase 3.1, Layer 8)
+pub use policy::{
+    compute_request_hash, sha256_hex, ApprovalSubject, ApprovalToken, ApprovalTokenSignedPayload,
+    CapabilityInvocationRequest, PolicyAuditRecord, PolicyBundleSource, PolicyDecision,
+    PolicyEngine, PolicyError, PolicySnapshot, PolicyTier, SandboxConstraints,
+    ENGINE_MAX_TIMEOUT_MS, MAX_CONFIRMATION_TOKEN_TTL_MS, POLICY_SCHEMA_SRC,
 };
 
 // Re-export core types for ergonomic consumption (Phase 1)

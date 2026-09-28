@@ -18,3 +18,5 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 thiserror = "2.0"
 rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.10"
+cedar-policy = "4.13.0"
+sha2 = "0.11.0"
