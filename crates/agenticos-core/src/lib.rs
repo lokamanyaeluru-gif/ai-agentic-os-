@@ -1,4 +1,4 @@
-//! AI Agentic OS Core Domain Models and State Machines (Phase 1).
+//! AI Agentic OS Core Domain Models and State Machines.
 //!
 //! Provides formal, local-only domain types and lifecycle state machines for:
 //! - Intent (request lifecycle: Created -> Accepted -> Completed / Failed / Cancelled)
@@ -6,7 +6,9 @@
 //! - Workflow (DAG execution plan lifecycle)
 //! - WorkflowStep (atomic capability invocation unit lifecycle)
 //! - ExecutionResult (execution outcome)
+//! - Agent & Assignment (Layer 5 Global Agent Manager domain models and lifecycles)
 
+pub mod agent;
 pub mod error;
 pub mod execution;
 pub mod goal;
@@ -16,7 +18,14 @@ pub mod runtime;
 pub mod storage;
 pub mod workflow;
 
-// Re-export core types for ergonomic consumption
+// Re-export agent domain models (Phase 2)
+pub use agent::{
+    AgentHealthState, AgentId, AgentLifecycleState, AgentRecord, AgentResourceMetrics, AgentScope,
+    AgentType, AgentVersion, AssignmentId, AssignmentStatus, HeartbeatRecord, ProcessIdentity,
+    RestartPolicy, WorkAssignment,
+};
+
+// Re-export core types for ergonomic consumption (Phase 1)
 pub use error::DomainError;
 pub use execution::{ExecutionOutcomeStatus, ExecutionResult};
 pub use goal::{Goal, GoalObjective, GoalStatus};

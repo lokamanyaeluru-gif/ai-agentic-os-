@@ -3,7 +3,7 @@
 use agenticos_contracts::{ErrorCode, ErrorPayload, RetryClassification};
 use uuid::Uuid;
 
-/// Domain error conditions across Intent, Goal, Workflow, and Step lifecycles.
+/// Domain error conditions across Intent, Goal, Workflow, Step, Agent, and Assignment lifecycles.
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
 pub enum DomainError {
     #[error("Invalid state transition for {entity} from {from} to {to}")]
@@ -45,6 +45,18 @@ pub enum DomainError {
 
     #[error("Intent normalization failed: {reason}")]
     NormalizationFailed { reason: String },
+
+    #[error("Invalid agent record: {reason}")]
+    InvalidAgentRecord { reason: &'static str },
+
+    #[error("Invalid work assignment: {reason}")]
+    InvalidWorkAssignment { reason: &'static str },
+
+    #[error("Restart policy exhausted: max retries {max_retries}, current retries {current_retries}")]
+    RestartExhausted {
+        max_retries: u32,
+        current_retries: u32,
+    },
 }
 
 impl From<DomainError> for ErrorPayload {
@@ -61,6 +73,9 @@ impl From<DomainError> for ErrorPayload {
             DomainError::CorrelationIdMismatch { .. } => ErrorCode::InvalidRequest,
             DomainError::InvalidRawInput { .. } => ErrorCode::InvalidRequest,
             DomainError::NormalizationFailed { .. } => ErrorCode::InvalidRequest,
+            DomainError::InvalidAgentRecord { .. } => ErrorCode::InvalidRequest,
+            DomainError::InvalidWorkAssignment { .. } => ErrorCode::InvalidRequest,
+            DomainError::RestartExhausted { .. } => ErrorCode::InvalidRequest,
         };
 
         ErrorPayload::new(

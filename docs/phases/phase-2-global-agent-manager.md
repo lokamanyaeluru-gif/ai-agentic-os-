@@ -112,7 +112,7 @@ The Global Agent Manager acts as the authoritative orchestration and supervisory
 ### 3.1 Agent Scope & Identity (`AgentRecord`)
 
 ```rust
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use agenticos_contracts::{PrincipalContext, ProtocolVersion};
@@ -206,8 +206,11 @@ pub struct AgentRecord {
     pub scope: AgentScope,
 
     /// Set of canonical capability identifiers this agent is qualified to execute.
+    /// Uses `BTreeSet<String>` (instead of `HashSet`) to guarantee lexicographically sorted,
+    /// deterministic serialization order in JSON payloads, SQLite storage, and audit logs,
+    /// ensuring reproducibility in cryptographic hashes, signatures, and equality comparisons.
     /// Example: `["fs.create_directory", "fs.read_file"]`.
-    pub declared_capabilities: HashSet<String>,
+    pub declared_capabilities: BTreeSet<String>,
 
     /// Host OS process identity tracking with PID recycling protection.
     pub process_identity: ProcessIdentity,
@@ -476,7 +479,7 @@ pub struct WorkAssignment {
     /// Timestamp (ms, UTC) when status was last updated.
     pub updated_at_ms: u64,
 
-    /// Optional timeout duration in milliseconds.
+    /// Execution timeout duration in milliseconds (must be non-zero).
     pub timeout_duration_ms: u64,
 }
 ```
