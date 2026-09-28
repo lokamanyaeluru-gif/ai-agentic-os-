@@ -100,7 +100,7 @@ const AGENT_REGISTRY_MIGRATIONS: &[Migration] = &[Migration {
 }];
 
 /// Maps low-level SQLite errors into typed `StorageError` instances.
-fn map_sqlite_err(e: rusqlite::Error) -> StorageError {
+pub(crate) fn map_sqlite_err(e: rusqlite::Error) -> StorageError {
     match &e {
         rusqlite::Error::SqliteFailure(err, msg) => {
             if err.code == rusqlite::ErrorCode::DatabaseBusy {
@@ -132,7 +132,10 @@ fn map_sqlite_err(e: rusqlite::Error) -> StorageError {
 }
 
 /// Asserts that relational `agent_capabilities` rows strictly match `agent.declared_capabilities`.
-fn verify_agent_capabilities(conn: &Connection, agent: &AgentRecord) -> Result<(), StorageError> {
+pub(crate) fn verify_agent_capabilities(
+    conn: &Connection,
+    agent: &AgentRecord,
+) -> Result<(), StorageError> {
     let agent_id_str = agent.agent_id.to_string();
     let mut stmt = conn
         .prepare(
@@ -196,6 +199,28 @@ impl AgentRegistryStore {
     pub fn open_default() -> Result<Self, StorageError> {
         let db_path = default_data_dir().join("agent_registry.db");
         Self::open(db_path)
+    }
+
+    /// Executes a closure within an exclusive SQLite transaction (`BEGIN IMMEDIATE`).
+    ///
+    /// Acquires the SQLite write lock immediately, serializing concurrent writes
+    /// across separate connections and threads.
+    ///
+    /// If the closure returns `Ok`, the transaction is committed.
+    /// If the closure returns `Err`, the transaction is rolled back automatically.
+    pub fn with_write_transaction<T, E, F>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce(&rusqlite::Transaction) -> Result<T, E>,
+        E: From<StorageError>,
+    {
+        let mut conn = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(map_sqlite_err)?;
+
+        let result = f(&tx)?;
+        tx.commit().map_err(map_sqlite_err)?;
+        Ok(result)
     }
 
     // =======================================================================

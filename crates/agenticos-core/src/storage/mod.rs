@@ -6,6 +6,7 @@ pub mod intent_store;
 pub mod workflow_store;
 
 pub use agent_store::AgentRegistryStore;
+pub(crate) use agent_store::{map_sqlite_err, verify_agent_capabilities};
 pub use config::{default_data_dir, Migration};
 pub use error::StorageError;
 pub use goal_store::GoalStore;

@@ -898,10 +898,16 @@ fn test_concurrent_transactional_lifecycle_updates() {
     );
 
     // If final state is Stopping, either r2 succeeded after r1, or r2 succeeded and r1 failed
-    if final_agent.state == AgentLifecycleState::Stopping {
-        if let Err(err) = r1 {
-            assert!(matches!(err, AgentLifecycleError::InvalidTransition { .. }));
-            assert!(r2.is_ok());
-        }
+    if let Err(err) = r1 {
+        assert!(
+            matches!(
+                err,
+                AgentLifecycleError::InvalidTransition { .. }
+                    | AgentLifecycleError::Storage(StorageError::InvalidStateTransition { .. })
+            ),
+            "Expected invalid transition or storage transition rejection, got: {:?}",
+            err
+        );
+        assert!(r2.is_ok());
     }
 }

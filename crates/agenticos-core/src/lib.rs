@@ -21,8 +21,10 @@ pub mod workflow;
 // Re-export agent domain models (Phase 2)
 pub use agent::{
     AgentHealthState, AgentId, AgentLifecycleEngine, AgentLifecycleError, AgentLifecycleState,
-    AgentRecord, AgentResourceMetrics, AgentScope, AgentType, AgentVersion, AssignmentId,
-    AssignmentStatus, HeartbeatRecord, ProcessIdentity, RestartPolicy, WorkAssignment,
+    AgentManagerError, AgentRecord, AgentResourceMetrics, AgentScope, AgentType, AgentVersion,
+    AssignmentId, AssignmentRequest, AssignmentStatus, DefaultHealthEvaluator, DegradedEligibility,
+    GlobalAgentManager, HealthEvaluator, HeartbeatRecord, ManagerConfig, ProcessIdentity,
+    RestartPolicy, WorkAssignment,
 };
 
 // Re-export core types for ergonomic consumption (Phase 1)
