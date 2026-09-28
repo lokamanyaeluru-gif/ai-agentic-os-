@@ -9,6 +9,7 @@
 //! - Agent & Assignment (Layer 5 Global Agent Manager domain models and lifecycles)
 
 pub mod agent;
+pub mod capability;
 pub mod error;
 pub mod execution;
 pub mod goal;
@@ -37,6 +38,18 @@ pub use policy::{
     CapabilityInvocationRequest, PolicyAuditRecord, PolicyBundleSource, PolicyDecision,
     PolicyEngine, PolicyError, PolicySnapshot, PolicyTier, SandboxConstraints,
     ENGINE_MAX_TIMEOUT_MS, MAX_CONFIRMATION_TOKEN_TTL_MS, POLICY_SCHEMA_SRC,
+};
+
+// Re-export capability boundary plane (Phase 3.2, Layer 9)
+pub use capability::{
+    bind, build_plan, evaluate_conditions, fixture_bundle_manifests, fixture_create_directory,
+    fixture_delete_tree, fixture_read_file, validate, Atomicity, BwrapArgv, CancelSignal,
+    CapabilityError, CapabilityManifest, CapabilityRegistry, Ceilings, CheckExpr, ConditionResult,
+    CrashShape, DecisionRef, EscalationPolicy, ExecArg, ExecPlan, ExecutionReport, ExecutionStatus,
+    FdPlan, FileMeta, FilesystemView, InvocationBinding, LandlockRights, LandlockRule,
+    ManifestBundle, MemView, MountEntry, MountMode, MountSource, ResolvedConstraints, RestartShape,
+    RiskTier, SandboxConstructionPlan, SandboxProfile, SeccompData, StdioPlan, SupervisionShape,
+    TimeoutSpec, UnshareSet, VerificationRef, VerificationResult, WorkerBoundary,
 };
 
 // Re-export core types for ergonomic consumption (Phase 1)
