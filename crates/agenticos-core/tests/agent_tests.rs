@@ -17,8 +17,8 @@ use uuid::Uuid;
 use agenticos_contracts::{PrincipalContext, ProtocolVersion, ResourceRef};
 use agenticos_core::agent::{
     AgentHealthState, AgentId, AgentLifecycleState, AgentRecord, AgentResourceMetrics, AgentScope,
-    AgentType, AgentVersion, AssignmentId, AssignmentStatus, HeartbeatRecord, ProcessIdentity,
-    RestartPolicy, WorkAssignment,
+    AgentType, AgentVersion, AssignmentStatus, HeartbeatRecord, ProcessIdentity, RestartPolicy,
+    WorkAssignment,
 };
 use agenticos_core::error::DomainError;
 
@@ -186,7 +186,8 @@ fn test_process_identity_rejects_unknown_fields() {
 
 #[test]
 fn test_restart_policy_rejects_unknown_fields() {
-    let json = r#"{"OnFailure":{"max_retries":3,"current_retries":0,"backoff_ms":500,"extra":true}}"#;
+    let json =
+        r#"{"OnFailure":{"max_retries":3,"current_retries":0,"backoff_ms":500,"extra":true}}"#;
     let err = serde_json::from_str::<RestartPolicy>(json);
     assert!(err.is_err(), "RestartPolicy must reject unknown fields");
 }
@@ -297,9 +298,15 @@ fn test_agent_restart_rearms_terminal_agent() {
     let mut agent = make_valid_agent();
 
     // Advance to terminal Stopped
-    agent.transition(AgentLifecycleState::Starting, 1_001_000).unwrap();
-    agent.transition(AgentLifecycleState::Stopping, 1_002_000).unwrap();
-    agent.transition(AgentLifecycleState::Stopped, 1_003_000).unwrap();
+    agent
+        .transition(AgentLifecycleState::Starting, 1_001_000)
+        .unwrap();
+    agent
+        .transition(AgentLifecycleState::Stopping, 1_002_000)
+        .unwrap();
+    agent
+        .transition(AgentLifecycleState::Stopped, 1_003_000)
+        .unwrap();
     assert!(agent.state.is_terminal());
 
     // Restart re-arms to Starting with fresh nonce and increments retry counter
@@ -314,7 +321,9 @@ fn test_agent_restart_rearms_terminal_agent() {
 
     // Verify retry counter incremented
     match agent.restart_policy {
-        RestartPolicy::OnFailure { current_retries, .. } => {
+        RestartPolicy::OnFailure {
+            current_retries, ..
+        } => {
             assert_eq!(current_retries, 1);
         }
         _ => panic!("Expected OnFailure policy"),
@@ -344,14 +353,20 @@ fn test_agent_restart_rejected_when_policy_exhausted() {
     )
     .unwrap();
 
-    agent.transition(AgentLifecycleState::Starting, 1_001_000).unwrap();
-    agent.transition(AgentLifecycleState::Failed, 1_002_000).unwrap();
+    agent
+        .transition(AgentLifecycleState::Starting, 1_001_000)
+        .unwrap();
+    agent
+        .transition(AgentLifecycleState::Failed, 1_002_000)
+        .unwrap();
 
     // First restart succeeds (current_retries becomes 1)
     agent.restart(Uuid::new_v4(), 1_003_000).unwrap();
 
     // Drive back to Failed
-    agent.transition(AgentLifecycleState::Failed, 1_004_000).unwrap();
+    agent
+        .transition(AgentLifecycleState::Failed, 1_004_000)
+        .unwrap();
 
     // Second restart must fail due to exhausted policy
     let err = agent.restart(Uuid::new_v4(), 1_005_000);
@@ -371,12 +386,16 @@ fn test_work_assignment_valid_lifecycle() {
     assert!(!assignment.status.is_terminal());
 
     // Assigned -> InProgress
-    assignment.transition(AssignmentStatus::InProgress, 1_001_000).unwrap();
+    assignment
+        .transition(AssignmentStatus::InProgress, 1_001_000)
+        .unwrap();
     assert_eq!(assignment.status, AssignmentStatus::InProgress);
     assert_eq!(assignment.updated_at_ms, 1_001_000);
 
     // InProgress -> Completed
-    assignment.transition(AssignmentStatus::Completed, 1_002_000).unwrap();
+    assignment
+        .transition(AssignmentStatus::Completed, 1_002_000)
+        .unwrap();
     assert_eq!(assignment.status, AssignmentStatus::Completed);
     assert!(assignment.status.is_terminal());
 }
@@ -385,7 +404,8 @@ fn test_work_assignment_valid_lifecycle() {
 fn test_work_assignment_cancellation_and_failure() {
     // Assigned -> Cancelled
     let mut a1 = make_valid_assignment(AgentId::new());
-    a1.transition(AssignmentStatus::Cancelled, 1_001_000).unwrap();
+    a1.transition(AssignmentStatus::Cancelled, 1_001_000)
+        .unwrap();
     assert!(a1.status.is_terminal());
 
     // Assigned -> Failed
@@ -395,14 +415,17 @@ fn test_work_assignment_cancellation_and_failure() {
 
     // InProgress -> Failed
     let mut a3 = make_valid_assignment(AgentId::new());
-    a3.transition(AssignmentStatus::InProgress, 1_001_000).unwrap();
+    a3.transition(AssignmentStatus::InProgress, 1_001_000)
+        .unwrap();
     a3.transition(AssignmentStatus::Failed, 1_002_000).unwrap();
     assert!(a3.status.is_terminal());
 
     // InProgress -> Cancelled
     let mut a4 = make_valid_assignment(AgentId::new());
-    a4.transition(AssignmentStatus::InProgress, 1_001_000).unwrap();
-    a4.transition(AssignmentStatus::Cancelled, 1_002_000).unwrap();
+    a4.transition(AssignmentStatus::InProgress, 1_001_000)
+        .unwrap();
+    a4.transition(AssignmentStatus::Cancelled, 1_002_000)
+        .unwrap();
     assert!(a4.status.is_terminal());
 }
 
@@ -411,15 +434,21 @@ fn test_work_assignment_invalid_transitions_rejected() {
     let mut assignment = make_valid_assignment(AgentId::new());
 
     // Cannot skip directly from Assigned to Completed
-    assert!(!assignment.status.can_transition_to(AssignmentStatus::Completed));
+    assert!(!assignment
+        .status
+        .can_transition_to(AssignmentStatus::Completed));
     assert!(matches!(
         assignment.transition(AssignmentStatus::Completed, 1_001_000),
         Err(DomainError::InvalidStateTransition { .. })
     ));
 
     // Transition to terminal Completed
-    assignment.transition(AssignmentStatus::InProgress, 1_001_000).unwrap();
-    assignment.transition(AssignmentStatus::Completed, 1_002_000).unwrap();
+    assignment
+        .transition(AssignmentStatus::InProgress, 1_001_000)
+        .unwrap();
+    assignment
+        .transition(AssignmentStatus::Completed, 1_002_000)
+        .unwrap();
 
     // Terminal states cannot be mutated
     assert!(matches!(
@@ -440,8 +469,14 @@ fn test_agent_scope_private_authorization() {
     let same_user = make_principal(1000);
     let other_user = make_principal(2000);
 
-    assert!(scope.authorizes(&same_user), "Private scope must authorize exact owner match");
-    assert!(!scope.authorizes(&other_user), "Private scope must reject different principal");
+    assert!(
+        scope.authorizes(&same_user),
+        "Private scope must authorize exact owner match"
+    );
+    assert!(
+        !scope.authorizes(&other_user),
+        "Private scope must reject different principal"
+    );
 }
 
 #[test]
@@ -628,7 +663,10 @@ fn test_work_assignment_rejects_invalid_capability_or_timeout() {
         1_000_000,
         10_000,
     );
-    assert!(matches!(err1, Err(DomainError::InvalidWorkAssignment { .. })));
+    assert!(matches!(
+        err1,
+        Err(DomainError::InvalidWorkAssignment { .. })
+    ));
 
     // Null byte in capability
     let err2 = WorkAssignment::new(
@@ -644,7 +682,10 @@ fn test_work_assignment_rejects_invalid_capability_or_timeout() {
         1_000_000,
         10_000,
     );
-    assert!(matches!(err2, Err(DomainError::InvalidWorkAssignment { .. })));
+    assert!(matches!(
+        err2,
+        Err(DomainError::InvalidWorkAssignment { .. })
+    ));
 
     // Zero timeout duration
     let err3 = WorkAssignment::new(
@@ -660,5 +701,8 @@ fn test_work_assignment_rejects_invalid_capability_or_timeout() {
         1_000_000,
         0, // invalid zero timeout
     );
-    assert!(matches!(err3, Err(DomainError::InvalidWorkAssignment { .. })));
+    assert!(matches!(
+        err3,
+        Err(DomainError::InvalidWorkAssignment { .. })
+    ));
 }

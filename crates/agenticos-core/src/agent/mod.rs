@@ -10,8 +10,6 @@ pub mod policy;
 
 pub use assignment::{AssignmentId, AssignmentStatus, WorkAssignment};
 pub use health::{AgentHealthState, AgentResourceMetrics, HeartbeatRecord};
-pub use identity::{
-    AgentId, AgentRecord, AgentScope, AgentType, AgentVersion, ProcessIdentity,
-};
+pub use identity::{AgentId, AgentRecord, AgentScope, AgentType, AgentVersion, ProcessIdentity};
 pub use lifecycle::AgentLifecycleState;
 pub use policy::RestartPolicy;

@@ -52,7 +52,9 @@ pub enum DomainError {
     #[error("Invalid work assignment: {reason}")]
     InvalidWorkAssignment { reason: &'static str },
 
-    #[error("Restart policy exhausted: max retries {max_retries}, current retries {current_retries}")]
+    #[error(
+        "Restart policy exhausted: max retries {max_retries}, current retries {current_retries}"
+    )]
     RestartExhausted {
         max_retries: u32,
         current_retries: u32,

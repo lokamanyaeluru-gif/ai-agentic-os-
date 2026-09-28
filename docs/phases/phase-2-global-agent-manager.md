@@ -644,6 +644,7 @@ CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 1. **Payload/Index Consistency**: On every `get()` or query, indexed columns (`agent_id`, `state`, `principal_id`, `instance_nonce`) are compared against the deserialized JSON `payload`. Any mismatch yields `StorageError::CorruptRecord`.
 2. **Terminal State Protection**: Updates to records already in terminal state (`Stopped`, `Failed`) are rejected at the storage layer unless accompanied by a verified restart action.
 3. **Transaction Isolation**: Agent registration and capability indexing are executed within a single SQLite atomic transaction (`tx.commit()`).
+4. **Heartbeat Timing Invariant**: `agent_heartbeats` enforces `PRIMARY KEY (agent_id, timestamp_ms)`. Heartbeats are discrete periodic telemetry samples (default interval 1000ms, >= 100ms enforced). Multiple valid heartbeat records for the same agent cannot legally share the same millisecond timestamp; duplicate submissions or burst collisions sharing `(agent_id, timestamp_ms)` are rejected as duplicate key violations (`StorageError::DuplicateKey`), ensuring time-series uniqueness and deduplicating IPC retransmissions. Process instance validity is verified via `instance_nonce`, and monotonic per-session ordering is tracked via `sequence_number`.
 
 ---
 

@@ -45,6 +45,18 @@ impl AgentHealthState {
 }
 
 /// Observed raw heartbeat telemetry record received over IPC from an active agent process.
+///
+/// ### Heartbeat Timing Invariant
+/// - Agent heartbeats are discrete periodic telemetry samples emitted on a configured interval
+///   (default `1000ms`, minimum `100ms`).
+/// - Multiple valid heartbeat records for the same agent cannot legally share the same millisecond
+///   timestamp. Exactly one heartbeat record is permitted per `(agent_id, timestamp_ms)`.
+/// - In the persistent telemetry table (`agent_heartbeats`), `(agent_id, timestamp_ms)` forms the
+///   primary key. Attempting to record multiple heartbeats with identical timestamps for the same
+///   agent is rejected as a duplicate key error, ensuring time-series uniqueness and deduplicating
+///   IPC retransmissions.
+/// - `sequence_number` provides monotonic per-instance ordering and packet loss detection over IPC,
+///   while `instance_nonce` identifies the manager-approved process session to reject stale heartbeats.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HeartbeatRecord {

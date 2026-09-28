@@ -16,8 +16,8 @@ use uuid::Uuid;
 
 use agenticos_contracts::{PrincipalContext, ResourceRef};
 
-use crate::error::DomainError;
 use super::identity::AgentId;
+use crate::error::DomainError;
 
 /// Unique identifier for a work assignment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -157,6 +157,7 @@ pub struct WorkAssignment {
 
 impl WorkAssignment {
     /// Creates and validates a new `WorkAssignment` in the `Assigned` status.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         correlation_id: Uuid,
         request_id: Uuid,

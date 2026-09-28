@@ -2,16 +2,16 @@
 //!
 //! Aligned with Phase 2.0 specification, ADR-0002, ADR-0006, and ADR-0007.
 
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::fmt;
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use agenticos_contracts::{PrincipalContext, ProtocolVersion};
 
-use crate::error::DomainError;
 use super::lifecycle::AgentLifecycleState;
 use super::policy::RestartPolicy;
+use crate::error::DomainError;
 
 /// Unique identifier for an agent instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -296,6 +296,7 @@ pub struct AgentRecord {
 
 impl AgentRecord {
     /// Creates and validates a new `AgentRecord` in the `Registered` state.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         agent_type: AgentType,
         agent_version: AgentVersion,
@@ -369,7 +370,8 @@ impl AgentRecord {
     ) -> Result<(), DomainError> {
         if !self.state.is_terminal() {
             return Err(DomainError::InvalidAgentRecord {
-                reason: "Cannot restart an agent that is not in a terminal state (Stopped or Failed)",
+                reason:
+                    "Cannot restart an agent that is not in a terminal state (Stopped or Failed)",
             });
         }
 

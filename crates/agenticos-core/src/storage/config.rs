@@ -23,7 +23,7 @@ pub struct Migration {
 /// - temp_store = MEMORY
 /// - auto_vacuum = INCREMENTAL
 pub fn configure_connection(conn: &Connection) -> Result<(), StorageError> {
-    // Execute standard AgenticOS SQLite production PRAGMAs in batch
+    // Execute standard AgenticOS SQLite production PRAGMAs
     conn.execute_batch(
         r#"
         PRAGMA journal_mode = WAL;
@@ -31,7 +31,6 @@ pub fn configure_connection(conn: &Connection) -> Result<(), StorageError> {
         PRAGMA foreign_keys = ON;
         PRAGMA busy_timeout = 5000;
         PRAGMA temp_store = MEMORY;
-        PRAGMA auto_vacuum = INCREMENTAL;
         "#,
     )?;
 
@@ -84,11 +83,78 @@ pub fn configure_connection(conn: &Connection) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// Configures an Agent Registry database connection with production PRAGMAs and verifies `auto_vacuum = INCREMENTAL`.
+///
+/// Rules:
+/// 1. Queries `PRAGMA auto_vacuum` on every AgentRegistryStore connection.
+/// 2. Requires the actual database value to be INCREMENTAL (2).
+/// 3. For a brand-new database (`table_count == 0`): configures `auto_vacuum = INCREMENTAL`
+///    before schema creation and journal mode initialization, then verifies that the resulting database value is 2.
+/// 4. For an existing database (`table_count > 0`): does NOT silently attempt to change `auto_vacuum`.
+///    If the existing database reports anything other than 2, fails closed with `StorageError::ConfigurationFailed`.
+/// 5. Does NOT automatically run VACUUM as part of ordinary startup recovery.
+pub fn configure_agent_registry_connection(conn: &Connection) -> Result<(), StorageError> {
+    let table_count: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name != 'android_metadata';",
+        [],
+        |row| row.get(0),
+    )?;
+
+    // Brand-new database: configure auto_vacuum = INCREMENTAL before journal mode initialization or table creation
+    if table_count == 0 {
+        conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL;")?;
+    }
+
+    // Configure standard AgenticOS PRAGMAs (WAL, synchronous, foreign keys, busy timeout, temp store)
+    configure_connection(conn)?;
+
+    // On every connection, require actual database value to be INCREMENTAL (2)
+    let auto_vacuum: i64 = conn.query_row("PRAGMA auto_vacuum;", [], |row| row.get(0))?;
+    if auto_vacuum != 2 {
+        return Err(StorageError::ConfigurationFailed {
+            reason: format!(
+                "Database auto_vacuum mode is {}, but INCREMENTAL (2) is required. Incompatible databases must be migrated or recreated.",
+                auto_vacuum
+            ),
+        });
+    }
+
+    Ok(())
+}
+
 /// Runs a lightweight integrity check (`PRAGMA quick_check`) on database open per ADR-0006.
 pub fn verify_integrity(conn: &Connection) -> Result<(), StorageError> {
     let result: String = conn.query_row("PRAGMA quick_check;", [], |row| row.get(0))?;
     if !result.eq_ignore_ascii_case("ok") {
         return Err(StorageError::DatabaseCorrupted { details: result });
+    }
+    Ok(())
+}
+
+/// Runs a full integrity check (`PRAGMA integrity_check;`) on database open for the Agent Registry.
+pub fn verify_full_integrity(conn: &Connection) -> Result<(), StorageError> {
+    let result: String = conn.query_row("PRAGMA integrity_check;", [], |row| row.get(0))?;
+    if !result.eq_ignore_ascii_case("ok") {
+        return Err(StorageError::DatabaseCorrupted { details: result });
+    }
+    Ok(())
+}
+
+/// Runs a foreign key constraint check (`PRAGMA foreign_key_check;`) on database open per ADR-0006.
+pub fn verify_foreign_keys(conn: &Connection) -> Result<(), StorageError> {
+    let mut stmt = conn.prepare("PRAGMA foreign_key_check;")?;
+    let mut rows = stmt.query([])?;
+    if let Some(row) = rows.next()? {
+        let table: String = row.get(0)?;
+        let rowid: i64 = row.get(1)?;
+        let parent: String = row.get(2)?;
+        let fkid: i64 = row.get(3)?;
+        return Err(StorageError::ForeignKeyViolation {
+            reason: format!(
+                "Foreign key check failed in table '{}' at rowid {} referencing parent '{}' (fkid {})",
+                table, rowid, parent, fkid
+            ),
+        });
     }
     Ok(())
 }

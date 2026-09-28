@@ -43,6 +43,14 @@ pub enum StorageError {
         idempotency_key: String,
     },
 
+    /// Duplicate primary key or unique constraint violation.
+    #[error("Duplicate key for entity '{entity}': {key}")]
+    DuplicateKey { entity: &'static str, key: String },
+
+    /// Storage engine busy or locked (SQLITE_BUSY).
+    #[error("Database busy or locked: {reason}")]
+    Busy { reason: String },
+
     /// Transition violates domain state-machine rules.
     #[error("Invalid state transition in storage for entity '{entity}' with ID '{id}': cannot transition from '{from}' to '{to}'")]
     InvalidStateTransition {
@@ -81,6 +89,7 @@ impl From<StorageError> for ErrorPayload {
     fn from(err: StorageError) -> Self {
         let (code, retry) = match &err {
             StorageError::DuplicateIdempotencyKey { .. }
+            | StorageError::DuplicateKey { .. }
             | StorageError::InvalidStateTransition { .. }
             | StorageError::TerminalState { .. }
             | StorageError::ForeignKeyViolation { .. } => (
@@ -90,6 +99,10 @@ impl From<StorageError> for ErrorPayload {
             StorageError::NotFound { .. } => (
                 agenticos_contracts::ErrorCode::StorageFailure,
                 agenticos_contracts::RetryClassification::Never,
+            ),
+            StorageError::Busy { .. } => (
+                agenticos_contracts::ErrorCode::StorageFailure,
+                agenticos_contracts::RetryClassification::Safe,
             ),
             StorageError::DatabaseCorrupted { .. }
             | StorageError::IncompatibleSchemaVersion { .. }
