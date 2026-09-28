@@ -421,18 +421,70 @@ impl AgentRegistryStore {
 
         let existing_agent: AgentRecord = serde_json::from_str(&current_payload)?;
 
-        // If currently in a terminal state (Stopped or Failed), update is allowed only
-        // if this is a validated restart transition to Starting with incremented retries.
+        // 1. Provenance / identity immutability
+        if agent.agent_id != existing_agent.agent_id
+            || agent.owner != existing_agent.owner
+            || agent.agent_type != existing_agent.agent_type
+            || agent.registered_at_ms != existing_agent.registered_at_ms
+        {
+            return Err(StorageError::CorruptRecord {
+                entity: "Agent",
+                id: agent_id_str,
+                reason: "Immutable identity or provenance fields cannot be modified on update"
+                    .into(),
+            });
+        }
+
+        // 2. Timestamp non-regression
+        if agent.updated_at_ms < existing_agent.updated_at_ms {
+            return Err(StorageError::InvalidStateTransition {
+                entity: "Agent",
+                id: agent_id_str,
+                from: format!("updated_at_ms: {}", existing_agent.updated_at_ms),
+                to: format!("updated_at_ms: {}", agent.updated_at_ms),
+            });
+        }
+
+        // 3. Lifecycle state transition enforcement
         if existing_agent.state.is_terminal() {
             let is_valid_restart = agent.state == crate::agent::AgentLifecycleState::Starting
                 && agent.process_identity.instance_nonce
-                    != existing_agent.process_identity.instance_nonce;
+                    != existing_agent.process_identity.instance_nonce
+                && existing_agent.restart_policy.can_restart();
 
             if !is_valid_restart {
                 return Err(StorageError::TerminalState {
                     entity: "Agent",
                     id: agent_id_str,
                     state: current_state,
+                });
+            }
+        } else if existing_agent.state != agent.state
+            && !existing_agent.state.can_transition_to(agent.state)
+        {
+            return Err(StorageError::InvalidStateTransition {
+                entity: "Agent",
+                id: agent_id_str,
+                from: format!("{:?}", existing_agent.state),
+                to: format!("{:?}", agent.state),
+            });
+        }
+
+        // 4. Instance nonce uniqueness check if instance nonce changed
+        if agent.process_identity.instance_nonce != existing_agent.process_identity.instance_nonce {
+            let nonce_str = agent.process_identity.instance_nonce.to_string();
+            let exists_nonce: bool = tx
+                .query_row(
+                    "SELECT 1 FROM agents WHERE instance_nonce = ? AND agent_id != ? LIMIT 1;",
+                    rusqlite::params![nonce_str, agent_id_str],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if exists_nonce {
+                return Err(StorageError::DuplicateKey {
+                    entity: "AgentInstanceNonce",
+                    key: nonce_str,
                 });
             }
         }
