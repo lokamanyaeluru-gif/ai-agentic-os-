@@ -76,7 +76,8 @@ pub trait ProcessObserver: Send + Sync {
 /// Inspects `/proc/[pid]/stat` to verify that the process exists on the host and that
 /// field 22 (`starttime` in clock ticks since boot) matches `start_time_ticks`.
 ///
-/// Does NOT spawn any subprocesses, execute shell commands, or modify the filesystem.
+/// Zero writable/general filesystem operations outside the authoritative SQLite registry.
+/// The production process observer performs read-only procfs observation of `/proc/[pid]/stat`.
 #[derive(Debug, Clone)]
 pub struct LinuxProcfsObserver {
     proc_root: PathBuf,

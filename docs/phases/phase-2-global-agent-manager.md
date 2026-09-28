@@ -729,6 +729,7 @@ Phase 2 will be executed and verified across the following sub-phase checkpoints
 ### Checkpoint 2.5: Failure Recovery & Restart Handling
 - Heartbeat ingest and liveness evaluation in `crates/agenticos-core/src/agent/monitor.rs`.
 - Host process observation (`crates/agenticos-core/src/agent/observer.rs`) via read-only Linux procfs inspection (`(pid, start_time_ticks)`).
+- Zero writable/general filesystem operations outside the authoritative SQLite registry. The production process observer performs read-only procfs observation of `/proc/[pid]/stat`.
 - Fail-closed non-destructive handling for `Unknown` liveness states without inventing process death.
 - Stale state and orphaned assignment reconciliation on manager startup (`crates/agenticos-core/src/agent/recovery.rs`).
 - Declarative restart policy execution (`Never`, `OnFailure`, `Always`).
