@@ -1,9 +1,10 @@
 # Phase 3.0: Policy Engine / Security Governance Specification
 
-* **Document Version**: 3.0.0
+* **Document Version**: 3.0.1
 * **Date**: 2026-09-28
 * **Phase**: 3.0 (Specification Only — No Implementation)
 * **Status**: APPROVED SPECIFICATION / READY FOR PHASE 3.1 IMPLEMENTATION PLANNING
+* **Amendment 3.0.1 (Dependency-Scope Amendment)**: Authorizes `sha2` as an additional workspace-pinned dependency for SHA-256 hashing only (§26). No SHA-256 requirement changed; no other TBD resolved.
 * **Architectural Baseline**: ADR-0001 through ADR-0007, `docs/architecture.md` (canonical layer numbering), `docs/security.md`, `docs/threat-model.md`, `docs/phases/phase-1-complete.md`, `docs/phases/phase-2-complete.md`
 * **Layer Numbering Authority**: `docs/architecture.md` is canonical. Where ADR-0006 / ADR-0007 context sections renumber layers differently, this specification follows `architecture.md` and treats those renumbers as documentation drift, not semantic change.
 
@@ -213,7 +214,7 @@ Mapped to `docs/threat-model.md` IDs; Phase 3.0 mitigates at the decision layer 
 * TH-05 Credential theft → blacklisted-path `forbid` shapes retained by reference; redaction in audit/error shapes; secrets never in evaluation inputs.
 * TH-06 Symlink/TOCTOU → explicitly not solved at the policy layer; noted as kernel/sandbox responsibility (`openat2`/`RESOLVE_*`, mount namespaces, Landlock) per ADR-0003/ADR-0005. No TOCTOU claim is made for Phase 3.0.
 * TH-07 Agent loops/resource exhaustion → bounded evaluation, timeout-guard shape, no auto-retry of `Never` mutations; cgroup enforcement deferred downstream.
-* TH-08/TH-09 Supply chain / third-party components → single well-scoped `cedar-policy` dependency anticipated for implementation (Apache-2.0, per ADR-0005); no other new dependency is authorized by this specification. Vetting pipeline from `docs/security.md` remains normative for Phase 3.1.
+* TH-08/TH-09 Supply chain / third-party components → two narrowly scoped dependencies anticipated for implementation: `cedar-policy` (policy engine, Apache-2.0, per ADR-0005) and `sha2` (SHA-256 hashing only, per Amendment 3.0.1); no other new dependency is authorized by this specification. Vetting pipeline from `docs/security.md` remains normative for Phase 3.1, and both additions must be audited before implementation.
 * TH-10 Hallucinated mutation / tampered output → pre/post-condition verification and output-schema validation remain downstream; Phase 3.0 contributes deterministic `DENY`/`CONFIRM` gating and lineage preservation (`correlation_id`, `request_id`, snapshot hash).
 * Audit tampering → hash-chain shape referenced; integrity anchors TBD per ADR-0006, no anchor invented here.
 
@@ -288,7 +289,7 @@ Preserved as TBD; Phase 3.0 invents no value for any item:
 Phase 3.1 may implement strictly from this specification without new architectural decisions:
 
 * New crate/module boundary for the policy plane consuming `agenticos-contracts` types only; no edits to Phase 1/2 domain semantics, state machines, or storage schemas except additive, backward-compatible extension where explicitly required and migration-covered.
-* Dependency addition limited to `cedar-policy` (pinned in `Cargo.lock`, audited) plus already-present workspace dependencies. No tokio/net/UI/LLM crates authorized by this spec.
+* Dependency addition limited to `cedar-policy` (policy-engine dependency, pinned in `Cargo.lock`, audited) and `sha2` (additional dependency used ONLY for the SHA-256 hashing already required by this specification: `policy_snapshot_hash` per §11 and `ApprovalSubject` `request_hash` per §14), plus already-present workspace dependencies. `sha2` must be workspace-pinned and recorded in `Cargo.lock`; its use is restricted to snapshot_hash and request_hash computation. No other cryptographic algorithms, key-management behavior, signature algorithms, key storage, token signing, or token verification may be introduced under this amendment. No `hex` or other encoding dependency is authorized; deterministic hexadecimal formatting must use existing/manual means. No tokio/net/UI/LLM crates authorized by this spec. Dependency additions must be audited before implementation.
 * Pure evaluation functions with deterministic fixtures; no process spawn, no socket dial, no filesystem writes outside test tempdirs and policy fixture dirs.
 * Harness must include the zero-execution proof (§22.9) and E2E fixtures (§23) before any Layer 6, Layer 9, or broker-signing work begins.
 * Any attempt to resolve §25 TBDs requires a spec amendment with ADR update; implementation must not silently fix a TBD value in code.
