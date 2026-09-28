@@ -659,14 +659,21 @@ CREATE INDEX IF NOT EXISTS idx_assignments_status ON assignments(status);
 When the Global Agent Manager reopens `agent_registry.db` after a crash or process restart:
 1. **Scan In-Flight States**: Queries all agents with state `Starting` or `Running`.
 2. **Process Liveness Verification**:
-   - Inspects host OS process table using `(pid, start_time_ticks)`.
-   - If PID does not exist or `/proc/[pid]/stat` field 22 `starttime` does not match `start_time_ticks`, the PID was recycled or died during the crash.
+   - Inspects host OS process table using `(pid, start_time_ticks)` via `ProcessObserver`.
+   - On Linux, `DefaultProcessObserver` / `LinuxProcfsObserver` inspects actual `/proc/[pid]/stat` field 22 `starttime`.
+   - Distinguishes five explicit states:
+     - `Alive`: Process exists on host and verified `start_time_ticks` matches. Agent remains untouched.
+     - `Dead`: Actual host evidence confirms the PID does not exist (`ENOENT`).
+     - `Recycled`: PID exists on host, but observed `starttime` does not match `start_time_ticks`.
+     - `Unspawned`: Agent identity has no PID/ticks (awaiting spawn). Agent remains untouched in `Starting`.
+     - `Unknown`: Host evidence is inaccessible or platform unsupported. **Fails closed non-destructively**: the agent is NOT transitioned to `Failed`, active assignments are NOT failed, retries are NOT incremented, and no restart decision is created.
 3. **Deterministic Non-Destructive Reconciliation**:
-   - Stale active assignments bound to the dead agent are transitioned to `AssignmentStatus::Failed` with reason `"Agent process died during manager restart"`.
-   - The agent record is transitioned to `AgentLifecycleState::Failed`.
-   - If the agent's `RestartPolicy` permits restart (`OnFailure` / `Always`), the manager schedules a clean restart transition (`Failed ─► Starting`) with an incremented retry counter and a fresh `instance_nonce`.
-   - If retries are exhausted or policy is `Never`, the agent remains in terminal `Failed`.
-   - No duplicate processes are spawned, and no corrupt state is silently overwritten.
+   - For confirmed `Dead` or `Recycled` processes:
+     - Stale active assignments bound to the dead agent are transitioned to `AssignmentStatus::Failed` with reason `"Agent process died during manager restart"`, preserving causal lineage.
+     - The agent record is transitioned to `AgentLifecycleState::Failed`.
+     - If the agent's `RestartPolicy` permits restart (`OnFailure` / `Always`), the manager schedules a clean restart transition (`Failed ─► Starting`) with an incremented retry counter and a fresh `instance_nonce`.
+     - If retries are exhausted or policy is `Never`, the agent remains in terminal `Failed`.
+     - No duplicate processes are spawned, and no corrupt state is silently overwritten.
 
 ---
 
@@ -721,9 +728,11 @@ Phase 2 will be executed and verified across the following sub-phase checkpoints
 
 ### Checkpoint 2.5: Failure Recovery & Restart Handling
 - Heartbeat ingest and liveness evaluation in `crates/agenticos-core/src/agent/monitor.rs`.
-- Process death and orphan state reconciliation on startup.
-- Declarative restart policy execution (`OnFailure`, `Always`).
-- Non-destructive recovery tests.
+- Host process observation (`crates/agenticos-core/src/agent/observer.rs`) via read-only Linux procfs inspection (`(pid, start_time_ticks)`).
+- Fail-closed non-destructive handling for `Unknown` liveness states without inventing process death.
+- Stale state and orphaned assignment reconciliation on manager startup (`crates/agenticos-core/src/agent/recovery.rs`).
+- Declarative restart policy execution (`Never`, `OnFailure`, `Always`).
+- Non-destructive recovery and regression tests.
 
 ### Checkpoint 2.6: End-to-End Manager Verification
 - Comprehensive integration suite connecting Phase 1 `WorkflowStep` synthesis to Layer 5 `GlobalAgentManager`:
