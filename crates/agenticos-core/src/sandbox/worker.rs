@@ -28,7 +28,6 @@ pub fn run_profile1_worker(
     ipc_fd: RawFd,
     expected_nonce: Uuid,
     workspace_path: &Path,
-    read_only: bool,
     kill_on_seccomp_violation: bool,
 ) -> i32 {
     // Enforce PR_SET_NO_NEW_PRIVS immediately upon entering the worker process
@@ -83,9 +82,10 @@ pub fn run_profile1_worker(
         _ => return 106,
     };
 
-    // 4. Enter Profile 1 Confinement
+    // 4. Enter Profile 1 Confinement configured with least-privilege capability profile
     let confined =
-        match enter_profile1_confinement(workspace_path, read_only, kill_on_seccomp_violation) {
+        match enter_profile1_confinement(workspace_path, &capability_id, kill_on_seccomp_violation)
+        {
             Ok(c) => c,
             Err(err) => {
                 let resp = IpcMessage::InvocationResponse {
@@ -102,10 +102,7 @@ pub fn run_profile1_worker(
     // 5. Execute Capability inside Confinement
     let (status, output, error) = match capability_id.as_str() {
         "fs.read_file" => {
-            let rel_path = arguments
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("missing");
+            let rel_path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
             let max_bytes = arguments
                 .get("max_bytes")
                 .and_then(|v| v.as_u64())
@@ -120,6 +117,30 @@ pub fn run_profile1_worker(
                         None,
                     )
                 }
+                Err(err) => (ExecutionStatus::Failure, None, Some(err.to_error_payload())),
+            }
+        }
+        "fs.create_directory" => {
+            let rel_path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+            match confined.create_directory(rel_path) {
+                Ok(()) => (
+                    ExecutionStatus::Success,
+                    Some(serde_json::json!({ "created": rel_path })),
+                    None,
+                ),
+                Err(err) => (ExecutionStatus::Failure, None, Some(err.to_error_payload())),
+            }
+        }
+        "fs.delete_tree" => {
+            let rel_path = arguments.get("path").and_then(|v| v.as_str()).unwrap_or("");
+
+            match confined.delete_tree(rel_path) {
+                Ok(()) => (
+                    ExecutionStatus::Success,
+                    Some(serde_json::json!({ "deleted": rel_path })),
+                    None,
+                ),
                 Err(err) => (ExecutionStatus::Failure, None, Some(err.to_error_payload())),
             }
         }

@@ -156,15 +156,77 @@ pub fn scope_mask_for_abi(abi: u32) -> u64 {
     }
 }
 
+/// Allowed filesystem access profile per capability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FsAccessProfile {
+    /// Read-only file inspection (`fs.read_file`).
+    /// Allows strictly: READ_FILE | READ_DIR.
+    ReadFile,
+    /// Non-destructive directory creation (`fs.create_directory`).
+    /// Allows strictly: READ_DIR | MAKE_DIR.
+    CreateDirectory,
+    /// Destructive tree deletion (`fs.delete_tree`).
+    /// Allows strictly: READ_DIR | REMOVE_DIR | REMOVE_FILE.
+    DeleteTree,
+    /// General workspace read-write (custom profile).
+    /// Allows read, write, make_reg, make_dir, remove_file, remove_dir, truncate.
+    /// Strictly excludes: EXECUTE, MAKE_CHAR, MAKE_BLOCK, MAKE_FIFO, MAKE_SOCK, MAKE_SYM, IOCTL_DEV.
+    WorkspaceReadWrite,
+}
+
+impl FsAccessProfile {
+    /// Maps a capability ID string to its corresponding Landlock filesystem access profile.
+    pub fn from_capability_id(capability_id: &str) -> Result<Self, SandboxError> {
+        match capability_id {
+            "fs.read_file" => Ok(Self::ReadFile),
+            "fs.create_directory" => Ok(Self::CreateDirectory),
+            "fs.delete_tree" => Ok(Self::DeleteTree),
+            "workspace.read_write" => Ok(Self::WorkspaceReadWrite),
+            other => Err(SandboxError::CapabilityExecutionFailed(format!(
+                "Unsupported capability in Profile 1 worker: '{other}'"
+            ))),
+        }
+    }
+
+    /// Computes the exact allowed filesystem rights bitmask for this capability profile,
+    /// bounded strictly by the handled rights of the discovered Landlock ABI.
+    pub fn allowed_mask(&self, handled_fs: u64) -> u64 {
+        let desired = match self {
+            Self::ReadFile => LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
+            Self::CreateDirectory => LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_MAKE_DIR,
+            Self::DeleteTree => {
+                LANDLOCK_ACCESS_FS_READ_DIR
+                    | LANDLOCK_ACCESS_FS_REMOVE_DIR
+                    | LANDLOCK_ACCESS_FS_REMOVE_FILE
+            }
+            Self::WorkspaceReadWrite => {
+                LANDLOCK_ACCESS_FS_READ_FILE
+                    | LANDLOCK_ACCESS_FS_READ_DIR
+                    | LANDLOCK_ACCESS_FS_WRITE_FILE
+                    | LANDLOCK_ACCESS_FS_MAKE_REG
+                    | LANDLOCK_ACCESS_FS_MAKE_DIR
+                    | LANDLOCK_ACCESS_FS_REMOVE_FILE
+                    | LANDLOCK_ACCESS_FS_REMOVE_DIR
+                    | LANDLOCK_ACCESS_FS_TRUNCATE
+            }
+        };
+
+        desired & handled_fs
+    }
+}
+
 /// Restricts the calling process to the given workspace directory descriptor using Landlock.
 ///
 /// Implements the Phase 4.2 Profile 1 confinement contract:
 /// 1. Probes kernel Landlock ABI version (fails closed if unavailable).
-/// 2. Configures handled access rights for all known FS, Network, and Scope vectors supported by the ABI.
-/// 3. Adds a `PATH_BENEATH` rule scoping allowed filesystem operations exclusively to `workspace_dirfd`.
+/// 2. Configures handled access rights for ALL known FS (16 rights), Network, and Scope vectors supported by the ABI.
+/// 3. Adds a `PATH_BENEATH` rule scoping allowed filesystem operations exclusively to `workspace_dirfd` using the capability profile.
 /// 4. Enacts the restriction via `landlock_restrict_self`.
 /// 5. Immediately closes the temporary ruleset descriptor.
-pub fn restrict_to_workspace(workspace_dirfd: RawFd, read_only: bool) -> Result<(), SandboxError> {
+pub fn restrict_to_workspace(
+    workspace_dirfd: RawFd,
+    profile: FsAccessProfile,
+) -> Result<(), SandboxError> {
     let abi = probe_landlock_abi()?;
 
     let handled_fs = fs_access_mask_for_abi(abi);
@@ -220,13 +282,8 @@ pub fn restrict_to_workspace(workspace_dirfd: RawFd, read_only: bool) -> Result<
 
     let ruleset_fd = ruleset_fd as RawFd;
 
-    // 2. Add PATH_BENEATH rule for workspace directory
-    let allowed_fs = if read_only {
-        LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
-    } else {
-        // ReadWrite: grant all supported FS rights except EXECUTE
-        handled_fs & !LANDLOCK_ACCESS_FS_EXECUTE
-    };
+    // 2. Add PATH_BENEATH rule for workspace directory with least-privilege capability allowed mask
+    let allowed_fs = profile.allowed_mask(handled_fs);
 
     let path_beneath = LandlockPathBeneathAttr {
         allowed_access: allowed_fs,
@@ -266,4 +323,13 @@ pub fn restrict_to_workspace(workspace_dirfd: RawFd, read_only: bool) -> Result<
     }
 
     Ok(())
+}
+
+/// Restricts the calling process to the given workspace directory descriptor for a specific capability ID.
+pub fn restrict_to_workspace_for_capability(
+    workspace_dirfd: RawFd,
+    capability_id: &str,
+) -> Result<(), SandboxError> {
+    let profile = FsAccessProfile::from_capability_id(capability_id)?;
+    restrict_to_workspace(workspace_dirfd, profile)
 }

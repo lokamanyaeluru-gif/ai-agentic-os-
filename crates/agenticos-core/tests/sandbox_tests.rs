@@ -2,15 +2,19 @@ use agenticos_contracts::ErrorCode;
 use agenticos_core::agent::observer::LinuxProcfsObserver;
 use agenticos_core::agent::AssignmentId;
 use agenticos_core::sandbox::{
-    apply_profile1_seccomp, build_profile1_bpf_filter, fs_access_mask_for_abi,
-    net_access_mask_for_abi, openat2_beneath, probe_landlock_abi, probe_landlock_errata,
-    read_file_beneath, restrict_to_workspace, run_profile1_worker, scope_mask_for_abi,
-    SandboxError, AUDIT_ARCH_X86_64, LANDLOCK_MIN_APPROVED_ABI, PROFILE1_ALLOWED_SYSCALLS,
-    PROFILE1_DENIED_SYSCALLS, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS,
+    apply_profile1_seccomp, build_profile1_bpf_filter, create_directory_beneath,
+    delete_tree_beneath, fs_access_mask_for_abi, net_access_mask_for_abi, openat2_beneath,
+    probe_landlock_abi, probe_landlock_errata, read_file_beneath, restrict_to_workspace,
+    run_profile1_worker, scope_mask_for_abi, FsAccessProfile, SandboxError, AUDIT_ARCH_X86_64,
+    LANDLOCK_ACCESS_FS_MAKE_DIR, LANDLOCK_ACCESS_FS_MAKE_REG, LANDLOCK_ACCESS_FS_READ_DIR,
+    LANDLOCK_ACCESS_FS_READ_FILE, LANDLOCK_ACCESS_FS_REMOVE_DIR, LANDLOCK_ACCESS_FS_REMOVE_FILE,
+    LANDLOCK_ACCESS_FS_WRITE_FILE, LANDLOCK_MIN_APPROVED_ABI, PROFILE1_ALLOWED_SYSCALLS,
+    PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS, SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO,
+    SECCOMP_RET_KILL_PROCESS,
 };
 use agenticos_core::supervisor::{
     reap_child_process, spawn_worker_process, CapabilitySupervisor, SupervisorConfig,
-    WorkerFailureReason, WorkerLifecycleState, MAX_FRAME_SIZE,
+    WorkerLifecycleState, MAX_FRAME_SIZE,
 };
 use std::ffi::CString;
 use std::fs::File;
@@ -53,7 +57,7 @@ fn test_landlock_abi_discovery_and_masks() {
     let fs_mask_5 = fs_access_mask_for_abi(5);
     assert_eq!(fs_mask_5, (1 << 16) - 1);
 
-    // Forward compatibility check: unknown higher ABIs still include known bits
+    // Forward compatibility check: unknown higher ABIs still include all 16 known bits
     let fs_mask_10 = fs_access_mask_for_abi(10);
     assert_eq!(fs_mask_10, (1 << 16) - 1);
 
@@ -62,6 +66,38 @@ fn test_landlock_abi_discovery_and_masks() {
 
     assert_eq!(scope_mask_for_abi(5), 0);
     assert!(scope_mask_for_abi(6) > 0);
+
+    // Test capability-specific allowed masks
+    let handled_fs = fs_access_mask_for_abi(abi);
+
+    let read_mask = FsAccessProfile::ReadFile.allowed_mask(handled_fs);
+    assert_eq!(
+        read_mask,
+        LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR
+    );
+    assert_eq!(read_mask & LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
+    assert_eq!(read_mask & LANDLOCK_ACCESS_FS_MAKE_DIR, 0);
+    assert_eq!(read_mask & LANDLOCK_ACCESS_FS_REMOVE_FILE, 0);
+
+    let mkdir_mask = FsAccessProfile::CreateDirectory.allowed_mask(handled_fs);
+    assert_eq!(
+        mkdir_mask,
+        LANDLOCK_ACCESS_FS_READ_DIR | LANDLOCK_ACCESS_FS_MAKE_DIR
+    );
+    assert_eq!(mkdir_mask & LANDLOCK_ACCESS_FS_READ_FILE, 0);
+    assert_eq!(mkdir_mask & LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
+    assert_eq!(mkdir_mask & LANDLOCK_ACCESS_FS_REMOVE_DIR, 0);
+
+    let del_mask = FsAccessProfile::DeleteTree.allowed_mask(handled_fs);
+    assert_eq!(
+        del_mask,
+        LANDLOCK_ACCESS_FS_READ_DIR
+            | LANDLOCK_ACCESS_FS_REMOVE_DIR
+            | LANDLOCK_ACCESS_FS_REMOVE_FILE
+    );
+    assert_eq!(del_mask & LANDLOCK_ACCESS_FS_WRITE_FILE, 0);
+    assert_eq!(del_mask & LANDLOCK_ACCESS_FS_MAKE_DIR, 0);
+    assert_eq!(del_mask & LANDLOCK_ACCESS_FS_MAKE_REG, 0);
 }
 
 #[test]
@@ -175,6 +211,56 @@ fn test_openat2_beneath_blocks_symlinks() {
 }
 
 #[test]
+fn test_openat2_directory_creation_and_deletion() {
+    let dir = tempdir().expect("Create tempdir");
+    let c_dir = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let dirfd = unsafe {
+        libc::open(
+            c_dir.as_ptr(),
+            libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+    assert!(dirfd >= 0);
+
+    // Create directory
+    create_directory_beneath(dirfd, "sub_dir").expect("create_directory");
+    assert!(dir.path().join("sub_dir").is_dir());
+
+    // Create file inside directory
+    let child_path = dir.path().join("sub_dir").join("file.txt");
+    File::create(&child_path)
+        .unwrap()
+        .write_all(b"sub_content")
+        .unwrap();
+
+    // Delete tree
+    delete_tree_beneath(dirfd, "sub_dir").expect("delete_tree");
+    assert!(!dir.path().join("sub_dir").exists());
+
+    // Negative tests for create_directory
+    assert!(matches!(
+        create_directory_beneath(dirfd, "../outside"),
+        Err(SandboxError::EscapeAttempt { .. })
+    ));
+    assert!(matches!(
+        create_directory_beneath(dirfd, "/tmp/bad"),
+        Err(SandboxError::EscapeAttempt { .. })
+    ));
+
+    // Negative tests for delete_tree
+    assert!(matches!(
+        delete_tree_beneath(dirfd, "."),
+        Err(SandboxError::CapabilityExecutionFailed(_))
+    ));
+    assert!(matches!(
+        delete_tree_beneath(dirfd, "../outside"),
+        Err(SandboxError::EscapeAttempt { .. })
+    ));
+
+    unsafe { libc::close(dirfd) };
+}
+
+#[test]
 fn test_seccomp_bpf_filter_structure() {
     let filter = build_profile1_bpf_filter(SECCOMP_RET_ERRNO | (libc::EPERM as u32));
     assert!(
@@ -189,108 +275,85 @@ fn test_seccomp_bpf_filter_structure() {
     // Instruction 2 kills on mismatch
     assert_eq!(filter[2].k, SECCOMP_RET_KILL_PROCESS);
 
-    // Denied syscalls are in filter
-    for &denied in PROFILE1_DENIED_SYSCALLS {
-        assert!(
-            filter.iter().any(|inst| inst.k == denied as u32),
-            "Filter must contain denied syscall {denied}"
+    // Critical forbidden syscalls are in filter and mapped strictly to SECCOMP_RET_KILL_PROCESS
+    for &denied in PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS {
+        let rel_idx = filter[4..]
+            .iter()
+            .position(|inst| inst.k == denied as u32)
+            .unwrap_or_else(|| panic!("Filter must contain denied syscall {denied}"));
+        let idx = 4 + rel_idx;
+        assert_eq!(
+            filter[idx + 1].k,
+            SECCOMP_RET_KILL_PROCESS,
+            "Denied syscall {denied} must return SECCOMP_RET_KILL_PROCESS"
         );
     }
 
-    // Allowed syscalls are in filter
+    // Allowed syscalls are in filter and mapped to SECCOMP_RET_ALLOW
     for &allowed in PROFILE1_ALLOWED_SYSCALLS {
-        assert!(
-            filter.iter().any(|inst| inst.k == allowed as u32),
-            "Filter must contain allowed syscall {allowed}"
+        let rel_idx = filter[4..]
+            .iter()
+            .position(|inst| inst.k == allowed as u32)
+            .unwrap_or_else(|| panic!("Filter must contain allowed syscall {allowed}"));
+        let idx = 4 + rel_idx;
+        assert_eq!(
+            filter[idx + 1].k,
+            SECCOMP_RET_ALLOW,
+            "Allowed syscall {allowed} must return SECCOMP_RET_ALLOW"
         );
     }
 }
 
 #[test]
-fn test_seccomp_denied_syscalls_fail_with_eperm_in_child() {
-    let handle = spawn_worker_process(|_ipc_fd, _nonce| {
-        // Step 1: Set PR_SET_NO_NEW_PRIVS
-        let res = unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
-        if res != 0 {
-            return 1;
-        }
-
-        // Step 2: Install Seccomp filter with EPERM on violation
-        if apply_profile1_seccomp(false).is_err() {
-            return 2;
-        }
-
-        // Test 1: socket creation must return EPERM
-        let sock = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-        if sock >= 0 {
-            unsafe { libc::close(sock) };
-            return 3; // FAILED: socket was permitted
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::EPERM) {
-            return 4; // FAILED: expected EPERM
-        }
-
-        // Test 2: fork / clone must return EPERM
-        let fork_res = unsafe { libc::syscall(libc::SYS_fork) };
-        if fork_res >= 0 {
-            return 5; // FAILED: fork succeeded
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::EPERM) {
-            return 6;
-        }
-
-        // Test 3: ptrace must return EPERM
-        let ptrace_res = unsafe { libc::syscall(libc::SYS_ptrace, 0, 0, 0, 0) };
-        if ptrace_res >= 0 {
-            return 7;
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::EPERM) {
-            return 8;
-        }
-
-        // Test 4: allowed syscalls like getpid must still work
-        let pid = unsafe { libc::getpid() };
-        if pid <= 0 {
-            return 9;
-        }
-
-        0 // SUCCESS
-    })
-    .expect("Spawn worker process");
-
-    let (exit_code, signal) = reap_child_process(handle.pid, true)
-        .expect("Reap child")
-        .expect("Status");
-
-    assert_eq!(signal, None);
-    assert_eq!(
-        exit_code,
-        Some(0),
-        "Child executed seccomp tests and exited with 0"
-    );
-}
-
-#[test]
-fn test_seccomp_kill_on_violation() {
+fn test_seccomp_critical_syscalls_kill_process_in_child() {
+    // 1. execve triggers SECCOMP_RET_KILL_PROCESS (SIGSYS = 31)
     let handle = spawn_worker_process(|_ipc_fd, _nonce| {
         unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
         apply_profile1_seccomp(true).unwrap();
 
-        // Trigger denied syscall in KILL mode -> kernel terminates process immediately with SIGSYS
-        unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        let path = CString::new("/bin/ls").unwrap();
+        let argv = [path.as_ptr(), std::ptr::null()];
+        unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), [std::ptr::null()].as_ptr()) };
         0
     })
-    .expect("Spawn worker process");
+    .expect("Spawn worker");
 
     let (exit_code, signal) = reap_child_process(handle.pid, true)
         .expect("Reap child")
         .expect("Status");
+    assert_eq!(signal, Some(31), "execve must be killed with SIGSYS");
+    assert_eq!(exit_code, None);
 
-    // Process was killed by SIGSYS (signal 31)
-    assert_eq!(signal, Some(31));
+    // 2. socket triggers SECCOMP_RET_KILL_PROCESS (SIGSYS = 31)
+    let handle = spawn_worker_process(|_ipc_fd, _nonce| {
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        apply_profile1_seccomp(true).unwrap();
+
+        unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        0
+    })
+    .expect("Spawn worker");
+
+    let (exit_code, signal) = reap_child_process(handle.pid, true)
+        .expect("Reap child")
+        .expect("Status");
+    assert_eq!(signal, Some(31), "socket must be killed with SIGSYS");
+    assert_eq!(exit_code, None);
+
+    // 3. fork triggers SECCOMP_RET_KILL_PROCESS (SIGSYS = 31)
+    let handle = spawn_worker_process(|_ipc_fd, _nonce| {
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+        apply_profile1_seccomp(true).unwrap();
+
+        unsafe { libc::syscall(libc::SYS_fork) };
+        0
+    })
+    .expect("Spawn worker");
+
+    let (exit_code, signal) = reap_child_process(handle.pid, true)
+        .expect("Reap child")
+        .expect("Status");
+    assert_eq!(signal, Some(31), "fork must be killed with SIGSYS");
     assert_eq!(exit_code, None);
 }
 
@@ -321,13 +384,13 @@ fn test_landlock_filesystem_containment_in_child() {
             return 1;
         }
 
-        // 3. Restrict with Landlock
-        if restrict_to_workspace(dirfd, true).is_err() {
+        // 3. Restrict with Landlock for ReadFile profile
+        if restrict_to_workspace(dirfd, FsAccessProfile::ReadFile).is_err() {
             unsafe { libc::close(dirfd) };
             return 2;
         }
 
-        // 4. Attempt to open file outside workspace (e.g. /etc/passwd or /tmp)
+        // 4. Attempt to open file outside workspace (e.g. /etc/passwd)
         let outside = CString::new("/etc/passwd").unwrap();
         let outside_fd = unsafe { libc::open(outside.as_ptr(), libc::O_RDONLY) };
         if outside_fd >= 0 {
@@ -374,7 +437,122 @@ fn test_landlock_filesystem_containment_in_child() {
 }
 
 #[test]
-fn test_profile1_worker_end_to_end_read_file_success() {
+fn test_landlock_handled_access_classes_are_strictly_denied() {
+    let dir = tempdir().expect("Create tempdir");
+    let target_file = dir.path().join("target.txt");
+    File::create(&target_file)
+        .unwrap()
+        .write_all(b"immutable")
+        .unwrap();
+
+    let workspace_path = dir.path().to_path_buf();
+
+    let handle = spawn_worker_process(move |_ipc_fd, _nonce| {
+        unsafe { libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) };
+
+        let c_path = CString::new(workspace_path.to_str().unwrap()).unwrap();
+        let dirfd = unsafe {
+            libc::open(
+                c_path.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            )
+        };
+        if dirfd < 0 {
+            return 1;
+        }
+
+        // Restrict with Landlock for ReadFile: ONLY READ_FILE and READ_DIR are allowed.
+        // ALL other 14 filesystem access classes are in handled_fs and MUST be denied!
+        if restrict_to_workspace(dirfd, FsAccessProfile::ReadFile).is_err() {
+            unsafe { libc::close(dirfd) };
+            return 2;
+        }
+
+        // Negative 1: WRITE_FILE must fail with EACCES
+        let f_c = CString::new("target.txt").unwrap();
+        let write_fd = unsafe { libc::openat(dirfd, f_c.as_ptr(), libc::O_WRONLY) };
+        if write_fd >= 0 {
+            unsafe { libc::close(write_fd) };
+            return 3; // FAILED: write was permitted!
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+            return 4;
+        }
+
+        // Negative 2: MAKE_DIR must fail with EACCES
+        let d_c = CString::new("new_folder").unwrap();
+        let mkdir_res = unsafe { libc::mkdirat(dirfd, d_c.as_ptr(), 0o755) };
+        if mkdir_res == 0 {
+            return 5; // FAILED: mkdir was permitted!
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+            return 6;
+        }
+
+        // Negative 3: MAKE_REG (O_CREAT) must fail with EACCES
+        let new_f_c = CString::new("created.txt").unwrap();
+        let creat_fd = unsafe {
+            libc::openat(
+                dirfd,
+                new_f_c.as_ptr(),
+                libc::O_CREAT | libc::O_WRONLY,
+                0o644,
+            )
+        };
+        if creat_fd >= 0 {
+            unsafe { libc::close(creat_fd) };
+            return 7; // FAILED: file creation was permitted!
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+            return 8;
+        }
+
+        // Negative 4: REMOVE_FILE must fail with EACCES
+        let rm_res = unsafe { libc::unlinkat(dirfd, f_c.as_ptr(), 0) };
+        if rm_res == 0 {
+            return 9; // FAILED: unlink was permitted!
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+            return 10;
+        }
+
+        // Negative 5: MAKE_SYM (symlink creation) must fail with EACCES
+        let sym_target = CString::new("target.txt").unwrap();
+        let sym_link = CString::new("sym_link").unwrap();
+        let sym_res = unsafe { libc::symlinkat(sym_target.as_ptr(), dirfd, sym_link.as_ptr()) };
+        if sym_res == 0 {
+            return 11; // FAILED: symlink creation was permitted!
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+            return 12;
+        }
+
+        // Positive check: READ_FILE succeeds
+        let read_fd = unsafe { libc::openat(dirfd, f_c.as_ptr(), libc::O_RDONLY) };
+        if read_fd < 0 {
+            return 13;
+        }
+        unsafe { libc::close(read_fd) };
+
+        unsafe { libc::close(dirfd) };
+        0 // SUCCESS
+    })
+    .expect("Spawn worker");
+
+    let (exit_code, signal) = reap_child_process(handle.pid, true)
+        .expect("Reap child")
+        .expect("Status");
+
+    assert_eq!(signal, None);
+    assert_eq!(
+        exit_code,
+        Some(0),
+        "Handled access rights were strictly denied"
+    );
+}
+
+#[test]
+fn test_profile1_capability_read_file_complete_matrix() {
     let dir = tempdir().expect("Create tempdir");
     let test_file = dir.path().join("data.json");
     File::create(&test_file)
@@ -382,128 +560,259 @@ fn test_profile1_worker_end_to_end_read_file_success() {
         .write_all(b"{\"key\": \"valuable_agent_data\"}")
         .unwrap();
 
+    let sym_file = dir.path().join("sym.json");
+    symlink("data.json", &sym_file).expect("Create symlink");
+
     let supervisor = make_test_supervisor();
-    let execution_id = Uuid::new_v4();
-    let dispatch_id = Uuid::new_v4();
-    let assignment_id = AssignmentId(Uuid::new_v4());
     let workspace_path = dir.path().to_path_buf();
 
+    // 1. Allowed operation succeeds
     let record = supervisor
         .execute_worker_with_request(
-            execution_id,
-            dispatch_id,
-            assignment_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
             "fs.read_file".to_string(),
             serde_json::json!({ "path": "data.json", "max_bytes": 4096 }),
             Some(Duration::from_secs(5)),
-            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true, false),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
         )
-        .expect("Execution succeeded");
-
-    assert_eq!(record.execution_id, execution_id);
-    assert_eq!(record.dispatch_id, dispatch_id);
+        .expect("Worker execution");
     assert_eq!(record.lifecycle_state, WorkerLifecycleState::Completed);
     assert_eq!(record.exit_code, Some(0));
-    assert!(record.error.is_none());
-}
 
-#[test]
-fn test_profile1_worker_escape_attempt_reported_to_supervisor() {
-    let dir = tempdir().expect("Create tempdir");
-    let supervisor = make_test_supervisor();
-    let execution_id = Uuid::new_v4();
-    let dispatch_id = Uuid::new_v4();
-    let assignment_id = AssignmentId(Uuid::new_v4());
-    let workspace_path = dir.path().to_path_buf();
-
+    // 2. Operation outside workspace fails
     let record = supervisor
         .execute_worker_with_request(
-            execution_id,
-            dispatch_id,
-            assignment_id,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
             "fs.read_file".to_string(),
             serde_json::json!({ "path": "../outside.txt", "max_bytes": 4096 }),
             Some(Duration::from_secs(5)),
-            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true, false),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
         )
         .expect("Worker execution");
-
     assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
-    assert_eq!(
-        record.failure_reason,
-        Some(WorkerFailureReason::AbnormalExit)
-    );
-    assert!(record.error.is_some());
-    let err = record.error.unwrap();
-    assert_eq!(err.code, ErrorCode::CapabilityExecutionFailed);
-    assert!(err
+    assert!(record.error.unwrap().message.contains("escape attempt"));
+
+    // 3. Symlink escape fails
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.read_file".to_string(),
+            serde_json::json!({ "path": "sym.json", "max_bytes": 4096 }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record
+        .error
+        .unwrap()
         .message
-        .contains("Path traversal escape attempt blocked"));
+        .contains("Symlink traversal blocked"));
 }
 
 #[test]
-fn test_profile1_worker_symlink_blocked_reported_to_supervisor() {
+fn test_profile1_capability_create_directory_complete_matrix() {
     let dir = tempdir().expect("Create tempdir");
-    let real_file = dir.path().join("real.txt");
-    File::create(&real_file)
+    let supervisor = make_test_supervisor();
+    let workspace_path = dir.path().to_path_buf();
+
+    // 1. Allowed operation succeeds
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.create_directory".to_string(),
+            serde_json::json!({ "path": "new_dir" }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Completed);
+    assert!(dir.path().join("new_dir").is_dir());
+
+    // 2. Operation outside workspace fails
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.create_directory".to_string(),
+            serde_json::json!({ "path": "../outside_dir" }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record.error.unwrap().message.contains("escape attempt"));
+
+    // 3. Symlink traversal fails
+    let sym_dest = dir.path().join("sym_dir_link");
+    symlink("new_dir", &sym_dest).expect("symlink");
+
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.create_directory".to_string(),
+            serde_json::json!({ "path": "sym_dir_link/sub" }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record
+        .error
         .unwrap()
-        .write_all(b"secret")
+        .message
+        .contains("Symlink traversal blocked"));
+}
+
+#[test]
+fn test_profile1_capability_delete_tree_complete_matrix() {
+    let dir = tempdir().expect("Create tempdir");
+    let target_dir = dir.path().join("to_delete");
+    std::fs::create_dir(&target_dir).unwrap();
+    File::create(target_dir.join("leaf.txt"))
+        .unwrap()
+        .write_all(b"bye")
         .unwrap();
 
-    let sym_file = dir.path().join("sym.txt");
-    symlink("real.txt", &sym_file).expect("Create symlink");
-
     let supervisor = make_test_supervisor();
-    let execution_id = Uuid::new_v4();
-    let dispatch_id = Uuid::new_v4();
-    let assignment_id = AssignmentId(Uuid::new_v4());
     let workspace_path = dir.path().to_path_buf();
+
+    // 1. Allowed operation succeeds
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.delete_tree".to_string(),
+            serde_json::json!({ "path": "to_delete" }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Completed);
+    assert!(!dir.path().join("to_delete").exists());
+
+    // 2. Operation outside workspace fails
+    let record = supervisor
+        .execute_worker_with_request(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.delete_tree".to_string(),
+            serde_json::json!({ "path": "../outside" }),
+            Some(Duration::from_secs(5)),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
+        )
+        .expect("Worker execution");
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record.error.unwrap().message.contains("escape attempt"));
+
+    // 3. Symlink traversal fails
+    let dummy_file = dir.path().join("dummy.txt");
+    File::create(&dummy_file).unwrap();
+    let sym_target = dir.path().join("sym_dummy");
+    symlink("dummy.txt", &sym_target).expect("symlink");
 
     let record = supervisor
         .execute_worker_with_request(
-            execution_id,
-            dispatch_id,
-            assignment_id,
-            "fs.read_file".to_string(),
-            serde_json::json!({ "path": "sym.txt", "max_bytes": 4096 }),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            AssignmentId(Uuid::new_v4()),
+            "fs.delete_tree".to_string(),
+            serde_json::json!({ "path": "sym_dummy" }),
             Some(Duration::from_secs(5)),
-            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true, false),
+            {
+                let wp = workspace_path.clone();
+                move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &wp, true)
+            },
         )
         .expect("Worker execution");
-
     assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
-    assert!(record.error.is_some());
-    let err = record.error.unwrap();
-    assert_eq!(err.code, ErrorCode::CapabilityExecutionFailed);
-    assert!(err.message.contains("Symlink traversal blocked"));
+    assert!(record
+        .error
+        .unwrap()
+        .message
+        .contains("Symlink traversal blocked"));
 }
 
 #[test]
-fn test_profile1_worker_non_existent_file_reported() {
-    let dir = tempdir().expect("Create tempdir");
-    let supervisor = make_test_supervisor();
-    let execution_id = Uuid::new_v4();
-    let dispatch_id = Uuid::new_v4();
-    let assignment_id = AssignmentId(Uuid::new_v4());
-    let workspace_path = dir.path().to_path_buf();
+fn test_profile1_worker_inherited_fd_hygiene() {
+    let sensitive_file = tempdir().expect("Sensitive dir");
+    let secret_path = sensitive_file.path().join("parent_secret.txt");
+    File::create(&secret_path)
+        .unwrap()
+        .write_all(b"super_secret_parent_data")
+        .unwrap();
 
-    let record = supervisor
-        .execute_worker_with_request(
-            execution_id,
-            dispatch_id,
-            assignment_id,
-            "fs.read_file".to_string(),
-            serde_json::json!({ "path": "does_not_exist.txt", "max_bytes": 4096 }),
-            Some(Duration::from_secs(5)),
-            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true, false),
-        )
-        .expect("Worker execution");
+    let c_path = CString::new(secret_path.to_str().unwrap()).unwrap();
+    let raw_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
+    assert!(raw_fd >= 0, "Opened raw_fd");
+    let parent_fd = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD, 10) };
+    unsafe { libc::close(raw_fd) };
+    assert!(parent_fd >= 10, "Parent FD is >= 10");
 
-    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
-    assert!(record.error.is_some());
-    let err = record.error.unwrap();
-    assert_eq!(err.code, ErrorCode::CapabilityExecutionFailed);
-    assert!(err.message.contains("openat2 failed"));
+    let handle = spawn_worker_process(move |_ipc_fd, _nonce| {
+        let mut buf = [0u8; 16];
+        let n = unsafe { libc::read(parent_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        if n >= 0 {
+            return 1;
+        }
+        let err = std::io::Error::last_os_error();
+        if err.raw_os_error() != Some(libc::EBADF) {
+            return 2;
+        }
+
+        0
+    })
+    .expect("Spawn worker");
+
+    unsafe { libc::close(parent_fd) };
+
+    let (exit_code, signal) = reap_child_process(handle.pid, true)
+        .expect("Reap child")
+        .expect("Status");
+
+    assert_eq!(signal, None);
+    assert_eq!(
+        exit_code,
+        Some(0),
+        "Inherited FD hygiene confirmed: FD >= 4 closed"
+    );
 }
 
 #[test]
@@ -523,7 +832,7 @@ fn test_profile1_worker_unsupported_capability_fails() {
             "unsupported.action".to_string(),
             serde_json::json!({}),
             Some(Duration::from_secs(5)),
-            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true, false),
+            move |ipc_fd, nonce| run_profile1_worker(ipc_fd, nonce, &workspace_path, true),
         )
         .expect("Worker execution");
 
@@ -534,53 +843,4 @@ fn test_profile1_worker_unsupported_capability_fails() {
     assert!(err
         .message
         .contains("Unsupported capability in Profile 1 worker"));
-}
-
-#[test]
-fn test_profile1_worker_inherited_fd_hygiene() {
-    // Open a sensitive file in the parent test process to simulate a leaked FD
-    let sensitive_file = tempdir().expect("Sensitive dir");
-    let secret_path = sensitive_file.path().join("parent_secret.txt");
-    File::create(&secret_path)
-        .unwrap()
-        .write_all(b"super_secret_parent_data")
-        .unwrap();
-
-    let c_path = CString::new(secret_path.to_str().unwrap()).unwrap();
-    let raw_fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY) };
-    assert!(raw_fd >= 0, "Opened raw_fd");
-    let parent_fd = unsafe { libc::fcntl(raw_fd, libc::F_DUPFD, 10) };
-    unsafe { libc::close(raw_fd) };
-    assert!(parent_fd >= 10, "Parent FD is >= 10");
-
-    // Spawn a worker process and verify that close_range_above(4) in spawn_worker_process
-    // closed this descriptor in the child
-    let handle = spawn_worker_process(move |_ipc_fd, _nonce| {
-        // Attempting to read from parent_fd must fail with EBADF because close_range_above(4) closed it
-        let mut buf = [0u8; 16];
-        let n = unsafe { libc::read(parent_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-        if n >= 0 {
-            return 1; // FAILED: Leaked parent FD was still open!
-        }
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() != Some(libc::EBADF) {
-            return 2; // Expected EBADF
-        }
-
-        0 // SUCCESS
-    })
-    .expect("Spawn worker");
-
-    unsafe { libc::close(parent_fd) };
-
-    let (exit_code, signal) = reap_child_process(handle.pid, true)
-        .expect("Reap child")
-        .expect("Status");
-
-    assert_eq!(signal, None);
-    assert_eq!(
-        exit_code,
-        Some(0),
-        "Inherited FD hygiene confirmed: FD >= 4 closed"
-    );
 }

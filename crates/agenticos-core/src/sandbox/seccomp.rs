@@ -48,33 +48,40 @@ pub struct SockFprog {
     pub filter: *const SockFilter,
 }
 
-/// Explicit list of forbidden syscalls for Profile 1 capability workers.
-pub const PROFILE1_DENIED_SYSCALLS: &[i64] = &[
-    libc::SYS_clone,           // 56
-    libc::SYS_fork,            // 57
-    libc::SYS_vfork,           // 58
-    libc::SYS_execve,          // 59
-    libc::SYS_ptrace,          // 101
-    155,                       // pivot_root
-    161,                       // chroot
-    165,                       // mount
-    166,                       // umount2
-    246,                       // kexec_load
-    272,                       // unshare
-    308,                       // setns
+/// Explicit list of security-critical forbidden syscalls for Profile 1 capability workers.
+///
+/// Any attempt to invoke these syscalls results in immediate process termination
+/// via `SECCOMP_RET_KILL_PROCESS` (Signal 31 `SIGSYS`).
+pub const PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS: &[i64] = &[
+    libc::SYS_clone,           // 56 (process/thread creation)
+    libc::SYS_fork,            // 57 (process creation)
+    libc::SYS_vfork,           // 58 (process creation)
+    libc::SYS_execve,          // 59 (binary execution)
+    libc::SYS_ptrace,          // 101 (process tracing / injection)
+    155,                       // pivot_root (root filesystem escape)
+    161,                       // chroot (jail manipulation)
+    165,                       // mount (filesystem mounting)
+    166,                       // umount2 (filesystem unmounting)
+    246,                       // kexec_load (kernel replacement)
+    272,                       // unshare (namespace creation)
+    308,                       // setns (namespace joining)
     libc::SYS_kexec_file_load, // 320
-    libc::SYS_bpf,             // 321
-    libc::SYS_execveat,        // 322
-    435,                       // clone3
-    libc::SYS_socket,          // 41
-    libc::SYS_connect,         // 42
-    libc::SYS_accept,          // 43
-    libc::SYS_bind,            // 49
-    libc::SYS_listen,          // 50
-    288,                       // accept4
+    libc::SYS_bpf,             // 321 (eBPF map/program injection)
+    libc::SYS_execveat,        // 322 (binary execution)
+    435,                       // clone3 (process creation)
+    libc::SYS_socket,          // 41 (network socket creation)
+    libc::SYS_connect,         // 42 (network connection)
+    libc::SYS_accept,          // 43 (network incoming connection)
+    libc::SYS_bind,            // 49 (network binding)
+    libc::SYS_listen,          // 50 (network listening)
+    288,                       // accept4 (network incoming connection)
 ];
 
-/// Empirically validated allowlist of syscalls required by the compiled Rust worker runtime.
+/// Backward-compatible alias for PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS.
+pub const PROFILE1_DENIED_SYSCALLS: &[i64] = PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS;
+
+/// Empirically validated allowlist of syscalls required by the compiled Rust worker runtime
+/// and approved Layer 8 capabilities (`fs.read_file`, `fs.create_directory`, `fs.delete_tree`).
 pub const PROFILE1_ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_read,              // 0
     libc::SYS_write,             // 1
@@ -118,13 +125,16 @@ pub const PROFILE1_ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_gettid,            // 186
     libc::SYS_futex,             // 202
     libc::SYS_sched_getaffinity, // 204
+    libc::SYS_getdents64,        // 217 (directory enumeration for tree traversal)
     libc::SYS_set_tid_address,   // 218
     libc::SYS_clock_gettime,     // 228
     libc::SYS_clock_nanosleep,   // 230
     libc::SYS_exit_group,        // 231
     libc::SYS_tgkill,            // 234
     libc::SYS_openat,            // 257
+    libc::SYS_mkdirat,           // 258 (directory creation for fs.create_directory)
     libc::SYS_newfstatat,        // 262
+    libc::SYS_unlinkat,          // 263 (file/dir deletion for fs.delete_tree)
     libc::SYS_set_robust_list,   // 273
     libc::SYS_prlimit64,         // 302
     libc::SYS_seccomp,           // 317
@@ -171,11 +181,11 @@ pub fn build_profile1_bpf_filter(action_on_deny: u32) -> Vec<SockFilter> {
         },
     ];
 
-    // 3. Explicit deny list: If matched, immediately return action_on_deny
-    for &denied_nr in PROFILE1_DENIED_SYSCALLS {
+    // 3. Explicit security-critical forbidden syscalls: ALWAYS kill process
+    for &denied_nr in PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS {
         instructions.push(SockFilter {
             code: BPF_JMP | BPF_JEQ | BPF_K,
-            jt: 0, // match -> fall through to return action_on_deny
+            jt: 0, // match -> fall through to return KILL_PROCESS
             jf: 1, // no match -> skip return
             k: denied_nr as u32,
         });
@@ -183,7 +193,7 @@ pub fn build_profile1_bpf_filter(action_on_deny: u32) -> Vec<SockFilter> {
             code: BPF_RET | BPF_K,
             jt: 0,
             jf: 0,
-            k: action_on_deny,
+            k: SECCOMP_RET_KILL_PROCESS,
         });
     }
 
@@ -203,7 +213,7 @@ pub fn build_profile1_bpf_filter(action_on_deny: u32) -> Vec<SockFilter> {
         });
     }
 
-    // 5. Default catch-all policy: return action_on_deny
+    // 5. Default catch-all policy for unlisted/unknown syscalls
     instructions.push(SockFilter {
         code: BPF_RET | BPF_K,
         jt: 0,
@@ -215,6 +225,11 @@ pub fn build_profile1_bpf_filter(action_on_deny: u32) -> Vec<SockFilter> {
 }
 
 /// Installs the Profile 1 Seccomp-BPF filter on the calling thread.
+///
+/// - Security-critical forbidden syscalls (`execve`, `fork`, `socket`, `ptrace`, etc.) ALWAYS terminate the process immediately (`SECCOMP_RET_KILL_PROCESS`).
+/// - Unlisted/unhandled syscalls are handled per `kill_on_violation`:
+///   - `true` (default production policy): `SECCOMP_RET_KILL_PROCESS`.
+///   - `false` (testing harness policy for unlisted syscalls): `SECCOMP_RET_ERRNO(EPERM)`.
 ///
 /// Fails closed if the kernel rejects the filter.
 pub fn apply_profile1_seccomp(kill_on_violation: bool) -> Result<(), SandboxError> {

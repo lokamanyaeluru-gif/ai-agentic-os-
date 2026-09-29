@@ -8,7 +8,7 @@
 //! 5. Pre-opened descriptor hygiene
 
 use super::error::SandboxError;
-use super::landlock::restrict_to_workspace;
+use super::landlock::restrict_to_workspace_for_capability;
 use super::openat2::openat2_beneath;
 use super::seccomp::apply_profile1_seccomp;
 use std::ffi::CString;
@@ -47,6 +47,16 @@ impl ConfinedWorkspace {
     pub fn read_file(&self, rel_path: &str, max_bytes: usize) -> Result<Vec<u8>, SandboxError> {
         super::openat2::read_file_beneath(self.workspace_dirfd, rel_path, max_bytes)
     }
+
+    /// Safely creates a directory located strictly beneath this workspace.
+    pub fn create_directory(&self, rel_path: &str) -> Result<(), SandboxError> {
+        super::openat2::create_directory_beneath(self.workspace_dirfd, rel_path)
+    }
+
+    /// Safely deletes a file or directory tree located strictly beneath this workspace.
+    pub fn delete_tree(&self, rel_path: &str) -> Result<(), SandboxError> {
+        super::openat2::delete_tree_beneath(self.workspace_dirfd, rel_path)
+    }
 }
 
 impl Drop for ConfinedWorkspace {
@@ -58,17 +68,17 @@ impl Drop for ConfinedWorkspace {
     }
 }
 
-/// Applies Profile 1 confinement to the calling process.
+/// Applies Profile 1 confinement to the calling process for a specific capability.
 ///
 /// Execution Sequence:
 /// 1. `PR_SET_NO_NEW_PRIVS`: Enforces that no subsequent exec or privilege escalation can occur.
 /// 2. Resolves and opens `workspace_path` with `O_PATH | O_DIRECTORY | O_CLOEXEC`.
-/// 3. Installs Landlock ruleset restricting the process to `workspace_dirfd`.
+/// 3. Installs Landlock ruleset restricting the process to `workspace_dirfd` with least-privilege capability profile.
 /// 4. Installs Seccomp-BPF filter denying `execve`, `clone`, `fork`, `socket`, etc.
 /// 5. Returns `ConfinedWorkspace` for subsequent `openat2` capability operations.
 pub fn enter_profile1_confinement(
     workspace_path: &Path,
-    read_only: bool,
+    capability_id: &str,
     kill_on_seccomp_violation: bool,
 ) -> Result<ConfinedWorkspace, SandboxError> {
     // Step 1: Set PR_SET_NO_NEW_PRIVS immediately
@@ -107,8 +117,8 @@ pub fn enter_profile1_confinement(
         )));
     }
 
-    // Step 3: Apply Landlock filesystem containment
-    if let Err(e) = restrict_to_workspace(workspace_dirfd, read_only) {
+    // Step 3: Apply Landlock filesystem containment with capability-specific allowed mask
+    if let Err(e) = restrict_to_workspace_for_capability(workspace_dirfd, capability_id) {
         unsafe { libc::close(workspace_dirfd) };
         return Err(e);
     }
