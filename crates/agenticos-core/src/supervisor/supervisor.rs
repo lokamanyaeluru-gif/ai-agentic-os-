@@ -124,6 +124,32 @@ impl CapabilitySupervisor {
     where
         F: FnOnce(RawFd, Uuid) -> i32 + Send + 'static,
     {
+        self.execute_worker_with_request(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            "stub.execute".to_string(),
+            serde_json::json!({}),
+            timeout,
+            child_entry,
+        )
+    }
+
+    /// Executes a worker process with explicit capability ID and invocation arguments.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_worker_with_request<F>(
+        &self,
+        execution_id: Uuid,
+        dispatch_id: Uuid,
+        assignment_id: AssignmentId,
+        capability_id: String,
+        arguments: serde_json::Value,
+        timeout: Option<Duration>,
+        child_entry: F,
+    ) -> Result<WorkerExecutionRecord, SupervisorError>
+    where
+        F: FnOnce(RawFd, Uuid) -> i32 + Send + 'static,
+    {
         let wall_clock_limit = timeout
             .unwrap_or(self.config.default_timeout)
             .min(self.config.max_timeout);
@@ -243,8 +269,8 @@ impl CapabilitySupervisor {
         // Step 4: Dispatch Invocation Request
         let invocation_req = IpcMessage::InvocationRequest {
             dispatch_id,
-            capability_id: "stub.execute".to_string(),
-            arguments: serde_json::json!({}),
+            capability_id,
+            arguments,
         };
 
         if let Err(e) = send_message(handle.supervisor_ipc_fd, &invocation_req) {

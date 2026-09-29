@@ -252,7 +252,47 @@ fn test_truncated_frame() {
     }
 
     let res = read_frame(child_fd, MAX_FRAME_SIZE);
-    assert!(matches!(res, Err(IpcError::TruncatedPayload { .. })));
+    assert!(matches!(
+        res,
+        Err(IpcError::DatagramLengthMismatch {
+            declared: 100,
+            actual: 10
+        }) | Err(IpcError::TruncatedPayload { .. })
+    ));
+
+    unsafe {
+        libc::close(child_fd);
+    }
+}
+
+#[test]
+fn test_trailing_bytes_in_datagram_rejected() {
+    let (parent_fd, child_fd) = create_seqpacket_socketpair().expect("socketpair created");
+
+    // Write length prefix claiming 4 bytes, but datagram contains 8 bytes (4 undeclared trailing bytes)
+    let declared_len: u32 = 4;
+    let mut data = Vec::new();
+    data.extend_from_slice(&declared_len.to_be_bytes());
+    data.extend_from_slice(b"1234extra!");
+
+    unsafe {
+        libc::send(
+            parent_fd,
+            data.as_ptr() as *const libc::c_void,
+            data.len(),
+            libc::MSG_NOSIGNAL,
+        );
+        libc::close(parent_fd);
+    }
+
+    let res = read_frame(child_fd, MAX_FRAME_SIZE);
+    assert!(matches!(
+        res,
+        Err(IpcError::DatagramLengthMismatch {
+            declared: 4,
+            actual: 10
+        })
+    ));
 
     unsafe {
         libc::close(child_fd);

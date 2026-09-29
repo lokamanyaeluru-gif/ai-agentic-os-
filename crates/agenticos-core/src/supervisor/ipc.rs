@@ -30,6 +30,11 @@ pub enum IpcError {
     )]
     TruncatedPayload { expected: usize, received: usize },
 
+    #[error(
+        "Datagram length mismatch: declared {declared} bytes, but datagram has {actual} bytes"
+    )]
+    DatagramLengthMismatch { declared: usize, actual: usize },
+
     #[error("IPC connection closed cleanly by peer")]
     ConnectionClosed,
 
@@ -142,15 +147,16 @@ pub fn write_frame(fd: RawFd, payload: &[u8]) -> Result<(), IpcError> {
 pub fn read_frame(fd: RawFd, max_size: usize) -> Result<Vec<u8>, IpcError> {
     let ceiling = max_size.min(MAX_FRAME_SIZE);
 
-    // 1. Peek 4-byte big-endian length prefix without consuming the datagram
+    // 1. Peek 4-byte big-endian length prefix and probe total datagram length via MSG_PEEK | MSG_TRUNC
     let mut len_buf = [0u8; 4];
+    let actual_datagram_len: usize;
     loop {
         let n = unsafe {
             libc::recv(
                 fd,
                 len_buf.as_mut_ptr() as *mut libc::c_void,
                 4,
-                libc::MSG_PEEK,
+                libc::MSG_PEEK | libc::MSG_TRUNC,
             )
         };
         if n < 0 {
@@ -169,26 +175,46 @@ pub fn read_frame(fd: RawFd, max_size: usize) -> Result<Vec<u8>, IpcError> {
                 unsafe { libc::recv(fd, discard.as_mut_ptr() as *mut libc::c_void, n as usize, 0) };
             return Err(IpcError::TruncatedHeader);
         }
+        actual_datagram_len = n as usize;
         break;
     }
 
     let declared_len = u32::from_be_bytes(len_buf) as usize;
-    if declared_len > ceiling {
+    if declared_len > ceiling || actual_datagram_len > 4 + ceiling {
         let mut discard = [0u8; 4];
         let _ = unsafe { libc::recv(fd, discard.as_mut_ptr() as *mut libc::c_void, 4, 0) };
-        return Err(IpcError::FrameTooLarge(declared_len));
+        return Err(IpcError::FrameTooLarge(
+            declared_len.max(actual_datagram_len.saturating_sub(4)),
+        ));
+    }
+
+    // Verify exact datagram length matches declared 4-byte header + payload (ADR-0007 regression check)
+    let expected_total_len = 4 + declared_len;
+    if actual_datagram_len != expected_total_len {
+        let mut discard = vec![0u8; actual_datagram_len];
+        let _ = unsafe {
+            libc::recv(
+                fd,
+                discard.as_mut_ptr() as *mut libc::c_void,
+                actual_datagram_len,
+                0,
+            )
+        };
+        return Err(IpcError::DatagramLengthMismatch {
+            declared: declared_len,
+            actual: actual_datagram_len.saturating_sub(4),
+        });
     }
 
     // 2. Read full packet (4 bytes header + declared_len bytes payload)
-    let total_len = 4 + declared_len;
-    let mut full_buf = vec![0u8; total_len];
+    let mut full_buf = vec![0u8; expected_total_len];
     let mut read_bytes = 0;
-    while read_bytes < total_len {
+    while read_bytes < expected_total_len {
         let n = unsafe {
             libc::recv(
                 fd,
                 full_buf[read_bytes..].as_mut_ptr() as *mut libc::c_void,
-                total_len - read_bytes,
+                expected_total_len - read_bytes,
                 0,
             )
         };

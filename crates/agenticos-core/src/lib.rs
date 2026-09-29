@@ -18,9 +18,23 @@ pub mod intent;
 pub mod normalizer;
 pub mod policy;
 pub mod runtime;
+pub mod sandbox;
 pub mod storage;
 pub mod supervisor;
 pub mod workflow;
+
+// Re-export sandbox & process isolation engine (Phase 4.2, Layer 8)
+pub use sandbox::{
+    apply_profile1_seccomp, build_profile1_bpf_filter, enter_profile1_confinement,
+    fs_access_mask_for_abi, net_access_mask_for_abi, openat2_beneath, probe_landlock_abi,
+    probe_landlock_errata, read_file_beneath, restrict_to_workspace, run_profile1_worker,
+    scope_mask_for_abi, ConfinedWorkspace, LandlockPathBeneathAttr, LandlockRulesetAttr, OpenHow,
+    SandboxError, SockFilter, SockFprog, AUDIT_ARCH_X86_64, LANDLOCK_ACCESS_FS_EXECUTE,
+    LANDLOCK_ACCESS_FS_READ_DIR, LANDLOCK_ACCESS_FS_READ_FILE, LANDLOCK_ACCESS_FS_WRITE_FILE,
+    LANDLOCK_MIN_APPROVED_ABI, PROFILE1_ALLOWED_SYSCALLS, PROFILE1_DENIED_SYSCALLS,
+    RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
+    SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS,
+};
 
 // Re-export supervisor foundations (Phase 4.1, Layer 7)
 pub use supervisor::{
