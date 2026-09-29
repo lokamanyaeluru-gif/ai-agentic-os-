@@ -10,6 +10,7 @@
 
 pub mod agent;
 pub mod capability;
+pub mod dispatch;
 pub mod error;
 pub mod execution;
 pub mod goal;
@@ -50,6 +51,12 @@ pub use capability::{
     ManifestBundle, MemView, MountEntry, MountMode, MountSource, ResolvedConstraints, RestartShape,
     RiskTier, SandboxConstructionPlan, SandboxProfile, SeccompData, StdioPlan, SupervisionShape,
     TimeoutSpec, UnshareSet, VerificationRef, VerificationResult, WorkerBoundary,
+};
+
+// Re-export dispatch consumer plane (Phase 3.3, Layer 6)
+pub use dispatch::{
+    never_cancel, CancelFlag, ConfirmationChallenge, DispatchError, DispatchOutcome,
+    DispatchRecord, Dispatcher,
 };
 
 // Re-export core types for ergonomic consumption (Phase 1)
