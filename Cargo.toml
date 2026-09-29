@@ -20,3 +20,4 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3.10"
 cedar-policy = "4.13.0"
 sha2 = "0.11.0"
+libc = "0.2"

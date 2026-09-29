@@ -17,6 +17,7 @@ version = "0.1.0"
 dependencies = [
  "agenticos-contracts",
  "cedar-policy",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",

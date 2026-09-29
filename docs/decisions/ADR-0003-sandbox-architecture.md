@@ -307,3 +307,30 @@ Designed for executing purpose-specific external binaries, compilers, or test ru
 * **Implementation Effort**: Requires implementing Landlock and seccomp rule generators and Bubblewrap argument builders.
 * **Process Launch Overhead**: Capabilities invoking `bwrap` incur a 5–15 ms process spawn latency (mitigated by using direct Landlock/seccomp worker setup for high-frequency low-risk read operations).
 * **Kernel Version Sensitivity**: Landlock features vary across kernel ABI versions. AgenticOS must probe the Landlock ABI at runtime, detect supported features, construct the strongest compatible profile, fail closed when required security guarantees cannot be provided, and test compatibility across supported kernels.
+
+---
+
+## Phase 4.1 Implementation Amendment (2026-09-29)
+
+Phase 4.1 implements the foundational execution lifecycle and descriptor hygiene contracts:
+1. **Worker Process Lifecycle**:
+   * Out-of-process isolation: CapabilitySupervisor never executes capability logic directly in the supervisor process.
+   * Fork sequence: Supervisor allocates an `AF_UNIX` `SOCK_SEQPACKET` socketpair and two pipes (stdout and stderr), then invokes `fork()`.
+2. **File Descriptor Lifecycle**:
+   * Child side:
+     - Stdin (FD 0) redirected to `/dev/null`.
+     - Stdout (FD 1) redirected to `stdout_pipe_write`.
+     - Stderr (FD 2) redirected to `stderr_pipe_write`.
+     - Worker IPC channel redirected to FD 3.
+     - Atomically closes all descriptors $\ge 4$ via `close_range(4, ~0U, 0)` before child entrypoint execution.
+   * Supervisor side:
+     - Immediately closes `worker_ipc_fd`, `stdout_pipe_write`, `stderr_pipe_write` upon successful spawn.
+     - Retains strictly: `supervisor_ipc_fd`, `stdout_pipe_read`, `stderr_pipe_read`.
+3. **Diagnostics & Rolling Stdio Buffers**:
+   * Supervisor maintains independent 64 KiB rolling ring buffers (`RollingLogBuffer`) for stdout and stderr to prevent memory exhaustion from verbose workers while retaining the most recent diagnostic context via rolling FIFO truncation.
+   * Multiplexed non-blocking polling drains pipes until true EOF after process termination.
+4. **Process Termination & Escalation Ladder**:
+   * Wall clock execution timeout (default 30s, max 300s).
+   * Cooperative termination via SIGTERM with a 500ms grace period.
+   * Escalation to SIGKILL on grace period expiration, reaped via non-blocking or blocking `waitpid`.
+

@@ -669,3 +669,41 @@ The following implementation-specific details are deferred to Phase 1:
 * Rust `serde` Framework (`https://serde.rs/`)
 * Rust `schemars` Library (`https://github.com/GREsau/schemars`)
 * RFC 8949: Concise Binary Object Representation (CBOR) (`https://datatracker.ietf.org/doc/html/rfc8949`)
+
+---
+
+## Phase 4.1 Implementation Amendment (2026-09-29)
+
+Phase 4.1 establishes concrete runtime contracts for the worker execution lifecycle and IPC protocol:
+
+### 1. IPC Wire Protocol (`IpcMessage`)
+* Transport: `AF_UNIX` `SOCK_SEQPACKET` socketpair.
+* Framing: 4-byte big-endian unsigned length header (`[L0, L1, L2, L3]`), followed by JSON payload of length $L \le 16\text{ MiB}$.
+* Message Variants:
+  - `HandshakeRequest { protocol_version: ProtocolVersion, instance_nonce: Uuid }`
+  - `HandshakeResponse { protocol_version: ProtocolVersion, instance_nonce: Uuid, pid: u32, start_time_ticks: u64 }`
+  - `InvocationRequest { dispatch_id: Uuid, capability_id: String, arguments: Value }`
+  - `InvocationResponse { dispatch_id: Uuid, status: ExecutionStatus, output: Option<Value>, error: Option<ErrorPayload> }`
+  - `Heartbeat { timestamp_ns: u64 }`
+
+### 2. Worker Lifecycle & Failure Taxonomy
+* `WorkerLifecycleState`: `Spawning`, `Handshaking`, `Ready`, `Executing`, `Completed`, `TimedOut`, `Terminating`, `Failed`, `Cancelled`.
+* `WorkerFailureReason`: `SpawnFailure`, `HandshakeFailure`, `IdentityMismatch`, `ProtocolViolation`, `Timeout`, `AbnormalExit`, `SignalTermination`, `IpcFailure`, `InternalError`.
+
+### 3. Ephemeral Execution Record (`WorkerExecutionRecord`)
+Captures complete execution audit lineage:
+* `execution_id: Uuid`
+* `dispatch_id: Uuid`
+* `assignment_id: AssignmentId`
+* `pid: u32`
+* `start_time_ticks: u64`
+* `instance_nonce: Uuid`
+* `lifecycle_state: WorkerLifecycleState`
+* `failure_reason: Option<WorkerFailureReason>`
+* `exit_code: Option<i32>`
+* `termination_signal: Option<i32>`
+* `stdout_capture: Vec<u8>` (up to 64 KiB rolling buffer)
+* `stderr_capture: Vec<u8>` (up to 64 KiB rolling buffer)
+* `duration_ms: u64`
+* `error: Option<ErrorPayload>`
+

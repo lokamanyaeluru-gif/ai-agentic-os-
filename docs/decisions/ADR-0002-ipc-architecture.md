@@ -167,3 +167,21 @@ Host system communication is isolated within dedicated **D-Bus Adapters** in Lay
 ### Negative / Trade-offs
 * **Protocol Implementation Responsibility**: AgenticOS must define and maintain a minimal, versioned, typed IPC protocol and connection management lifecycle rather than adopting an off-the-shelf RPC framework.
 * **Dual Paradigms**: Developers working on Layer 10 interact with D-Bus wire protocols and bus policies, while internal runtime developers work with POSIX UDS semantics.
+
+---
+
+## Phase 4.1 Implementation Amendment (2026-09-29)
+
+Phase 4.1 implements the concrete Layer 7 CapabilitySupervisor to worker execution channel:
+1. **Transport**: Direct `AF_UNIX` `SOCK_SEQPACKET` socketpair created via `libc::socketpair(AF_UNIX, SOCK_SEQPACKET | SOCK_CLOEXEC, 0)`.
+2. **Length Framing**: 4-byte big-endian unsigned length prefix. Maximum frame size: 16 MiB (`MAX_FRAME_SIZE = 16 * 1024 * 1024`).
+3. **Datagram Boundary Preservation**: `read_frame()` uses `libc::recv(fd, buf, 4, MSG_PEEK)` to inspect packet length without consuming bytes from the datagram, preventing packet truncation inherent to `SOCK_SEQPACKET` read semantics.
+4. **Authentication & Identity**:
+   * Kernel credentials via `getsockopt(..., SOL_SOCKET, SO_PEERCRED, ...)`.
+   * Cryptographically random 128-bit `instance_nonce` exchanged in initial handshake.
+   * Worker PID matching child PID from `fork()`.
+   * Worker start time ticks matching field 22 from `/proc/[pid]/stat`.
+5. **FD Lifecycle**:
+   * Worker establishes FD 3 as the designated IPC descriptor and executes `close_range(4, ~0U, 0)`.
+   * Supervisor immediately closes the worker socket descriptor copy post-spawn.
+

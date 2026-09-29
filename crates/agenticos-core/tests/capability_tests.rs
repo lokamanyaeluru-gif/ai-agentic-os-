@@ -6,16 +6,14 @@
 //! symbols (`"workspace"`); no host paths appear. Nothing is spawned,
 //! installed, or executed.
 use agenticos_core::capability::{
-    bind, build_plan, fixture_bundle_manifests,
-    fixture_create_directory, fixture_delete_tree, fixture_read_file, validate,
-    validate_manifest, Atomicity, CapabilityError, CapabilityRegistry,
-    CheckExpr, InvocationBinding, ManifestBundle, MemView, RiskTier,
-    SandboxProfile,
+    bind, build_plan, fixture_bundle_manifests, fixture_create_directory, fixture_delete_tree,
+    fixture_read_file, validate, validate_manifest, Atomicity, CapabilityError, CapabilityRegistry,
+    CheckExpr, InvocationBinding, ManifestBundle, MemView, RiskTier, SandboxProfile,
 };
 use agenticos_core::policy::PolicyDecision as PD;
 use agenticos_core::{
-    ApprovalToken, ApprovalTokenSignedPayload, CapabilityInvocationRequest, ErrorCode,
-    FileMeta, ResourceRef, RetryClassification, SandboxConstraints,
+    ApprovalToken, ApprovalTokenSignedPayload, CapabilityInvocationRequest, ErrorCode, FileMeta,
+    ResourceRef, RetryClassification, SandboxConstraints,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;

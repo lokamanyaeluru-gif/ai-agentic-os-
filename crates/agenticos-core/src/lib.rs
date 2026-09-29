@@ -19,7 +19,18 @@ pub mod normalizer;
 pub mod policy;
 pub mod runtime;
 pub mod storage;
+pub mod supervisor;
 pub mod workflow;
+
+// Re-export supervisor foundations (Phase 4.1, Layer 7)
+pub use supervisor::{
+    close_range_above, create_pipe, create_seqpacket_socketpair, get_peer_credentials, read_frame,
+    read_process_start_time_ticks, reap_child_process, receive_message, run_worker_loop,
+    send_message, spawn_worker_process, terminate_escalate, verify_worker_identity, write_frame,
+    CapabilitySupervisor, IpcError, IpcMessage, RollingLogBuffer, SupervisorConfig,
+    SupervisorError, WorkerExecutionRecord, WorkerFailureReason, WorkerHandle,
+    WorkerLifecycleState, DEFAULT_LOG_BUFFER_CAPACITY, DEFAULT_MAX_OUTPUT_SIZE, MAX_FRAME_SIZE,
+};
 
 // Re-export agent domain models (Phase 2)
 pub use agent::{
