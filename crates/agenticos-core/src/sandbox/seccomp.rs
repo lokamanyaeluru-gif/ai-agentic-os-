@@ -85,6 +85,7 @@ pub const PROFILE1_DENIED_SYSCALLS: &[i64] = PROFILE1_CRITICAL_FORBIDDEN_SYSCALL
 pub const PROFILE1_ALLOWED_SYSCALLS: &[i64] = &[
     libc::SYS_read,              // 0
     libc::SYS_write,             // 1
+    libc::SYS_open,              // 2
     libc::SYS_close,             // 3
     libc::SYS_fstat,             // 5
     libc::SYS_poll,              // 7

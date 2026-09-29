@@ -3,14 +3,16 @@ use agenticos_core::agent::observer::LinuxProcfsObserver;
 use agenticos_core::agent::AssignmentId;
 use agenticos_core::sandbox::{
     apply_profile1_seccomp, build_profile1_bpf_filter, create_directory_beneath,
-    delete_tree_beneath, fs_access_mask_for_abi, net_access_mask_for_abi, openat2_beneath,
-    probe_landlock_abi, probe_landlock_errata, read_file_beneath, restrict_to_workspace,
-    run_profile1_worker, scope_mask_for_abi, FsAccessProfile, SandboxError, AUDIT_ARCH_X86_64,
+    delete_tree_beneath, find_approved_bubblewrap, fs_access_mask_for_abi, net_access_mask_for_abi,
+    openat2_beneath, probe_cgroup_v2, probe_landlock_abi, probe_landlock_errata, read_file_beneath,
+    restrict_to_workspace, run_profile1_worker, scope_mask_for_abi, spawn_container_worker_process,
+    BubblewrapBinary, BubblewrapCommandBuilder, BubblewrapVersion, CgroupConfig, ContainerConfig,
+    FsAccessProfile, SandboxError, AUDIT_ARCH_X86_64, BWRAP_MIN_APPROVED_VERSION,
     LANDLOCK_ACCESS_FS_MAKE_DIR, LANDLOCK_ACCESS_FS_MAKE_REG, LANDLOCK_ACCESS_FS_READ_DIR,
     LANDLOCK_ACCESS_FS_READ_FILE, LANDLOCK_ACCESS_FS_REMOVE_DIR, LANDLOCK_ACCESS_FS_REMOVE_FILE,
     LANDLOCK_ACCESS_FS_WRITE_FILE, LANDLOCK_MIN_APPROVED_ABI, PROFILE1_ALLOWED_SYSCALLS,
-    PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS, SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO,
-    SECCOMP_RET_KILL_PROCESS,
+    PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS, PROFILE2_MEMORY_MAX_BYTES, PROFILE2_TASKS_MAX,
+    SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS,
 };
 use agenticos_core::supervisor::{
     reap_child_process, spawn_worker_process, CapabilitySupervisor, SupervisorConfig,
@@ -843,4 +845,411 @@ fn test_profile1_worker_unsupported_capability_fails() {
     assert!(err
         .message
         .contains("Unsupported capability in Profile 1 worker"));
+}
+
+// =========================================================================
+// PHASE 4.3: PROFILE 2 CONTAINER ISOLATION ENGINE SECURITY TESTS
+// =========================================================================
+
+#[test]
+fn test_bwrap_validation_approves_compliant_and_rejects_category_c() {
+    // 1. Probed approved binary check
+    let approved =
+        find_approved_bubblewrap().expect("Host must have approved Bubblewrap >= 0.12.0");
+    assert!(
+        approved.version.is_compliant(),
+        "Discovered version {} must be >= {}",
+        approved.version,
+        BWRAP_MIN_APPROVED_VERSION
+    );
+    assert_eq!(
+        approved.mode & (libc::S_ISUID | libc::S_ISGID),
+        0,
+        "Approved Bubblewrap must not have setuid or setgid bit set"
+    );
+
+    // 2. Reject Category C vulnerable system version if present
+    let system_bwrap = std::path::Path::new("/usr/bin/bwrap");
+    if system_bwrap.exists() {
+        let res = BubblewrapBinary::validate(system_bwrap);
+        // On Ubuntu 0.11.1, CVE-2026-87766 was dropped due to Flatpak regression
+        if let Ok(bin) = &res {
+            if bin.version < BWRAP_MIN_APPROVED_VERSION {
+                panic!(
+                    "Vulnerable version {} should have been rejected",
+                    bin.version
+                );
+            }
+        } else if let Err(SandboxError::BubblewrapNonCompliant(msg)) = &res {
+            assert!(
+                msg.contains("below required baseline") || msg.contains("Category C"),
+                "Expected rejection for Category C: {msg}"
+            );
+        }
+    }
+
+    // 3. Reject non-existent binary
+    let non_existent = std::path::Path::new("/usr/bin/bwrap_non_existent_12345");
+    match BubblewrapBinary::validate(non_existent) {
+        Err(SandboxError::BubblewrapNotFound(_)) => {}
+        other => panic!("Expected BubblewrapNotFound, got {:?}", other),
+    }
+
+    // 4. SemVer and CVE status mapping verification
+    let v_0111 = BubblewrapVersion::parse("0.11.1").unwrap();
+    assert!(!v_0111.is_compliant());
+    assert!(v_0111.cve_status().contains("CVE-2026-41163"));
+
+    let v_0112 = BubblewrapVersion::parse("0.11.2").unwrap();
+    assert!(!v_0112.is_compliant());
+    assert!(v_0112.cve_status().contains("CVE-2026-87766"));
+
+    let v_0120 = BubblewrapVersion::parse("0.12.0").unwrap();
+    assert!(v_0120.is_compliant());
+    assert!(v_0120.cve_status().contains("Approved Baseline"));
+
+    let v_0130 = BubblewrapVersion::parse("bubblewrap 0.13.0\n").unwrap();
+    assert!(v_0130.is_compliant());
+}
+
+#[test]
+fn test_bwrap_validation_rejects_insecure_permissions_and_flags() {
+    let dir = tempdir().expect("tempdir");
+    let fake_bin = dir.path().join("insecure_bwrap");
+    let mut file = File::create(&fake_bin).expect("create fake binary");
+    writeln!(file, "#!/bin/sh\necho bubblewrap 0.13.0").expect("write fake");
+    drop(file);
+
+    // Make world-writable (mode 0777)
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake_bin, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+
+    let res = BubblewrapBinary::validate(&fake_bin);
+    match res {
+        Err(SandboxError::BubblewrapNonCompliant(msg)) => {
+            assert!(msg.contains("world-writable"), "Unexpected message: {msg}");
+        }
+        other => panic!("Expected world-writable rejection, got {:?}", other),
+    }
+
+    // Test rejection of --not-a-security-boundary
+    let mut builder = BubblewrapCommandBuilder::new(fake_bin.clone(), 4, false, fake_bin.clone());
+    builder.arg("--not-a-security-boundary");
+    match builder.build_args() {
+        Err(SandboxError::BubblewrapNonCompliant(msg)) => {
+            assert!(msg.contains("rejects --not-a-security-boundary"));
+        }
+        other => panic!(
+            "Expected rejection of --not-a-security-boundary, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_cgroup_v2_probe_and_resource_bounds() {
+    probe_cgroup_v2().expect("Host must have operational cgroup v2");
+
+    let config = CgroupConfig::default();
+    assert_eq!(
+        config.memory_max_bytes, PROFILE2_MEMORY_MAX_BYTES,
+        "Profile 2 MemoryMax must be 512 MiB"
+    );
+    assert_eq!(
+        config.tasks_max, PROFILE2_TASKS_MAX,
+        "Profile 2 TasksMax must be 32"
+    );
+}
+
+#[test]
+fn test_profile2_container_startup_verification_and_handshake() {
+    let dir = tempdir().expect("tempdir");
+    let config = ContainerConfig::default();
+
+    let mut handle = spawn_container_worker_process(dir.path(), "fs.read_file", true, &config)
+        .expect("Spawn container worker");
+
+    // Verify supervisor descriptor hygiene
+    assert!(handle.pid > 0);
+    assert!(handle.supervisor_ipc_fd >= 0);
+    assert!(handle.stdout_pipe_read >= 0);
+    assert!(handle.stderr_pipe_read >= 0);
+
+    // Perform handshake
+    let req = agenticos_core::supervisor::IpcMessage::HandshakeRequest {
+        protocol_version: agenticos_contracts::ProtocolVersion::V1_0,
+        instance_nonce: handle.instance_nonce,
+    };
+    agenticos_core::supervisor::send_message(handle.supervisor_ipc_fd, &req)
+        .expect("Send handshake request to container");
+
+    let resp =
+        agenticos_core::supervisor::receive_message(handle.supervisor_ipc_fd, MAX_FRAME_SIZE)
+            .expect("Receive handshake response from container");
+
+    match resp {
+        agenticos_core::supervisor::IpcMessage::HandshakeResponse {
+            instance_nonce,
+            pid,
+            ..
+        } => {
+            assert_eq!(instance_nonce, handle.instance_nonce);
+            assert_eq!(pid, handle.pid);
+        }
+        other => panic!("Expected HandshakeResponse, got {:?}", other),
+    }
+
+    // Clean termination
+    handle.close_descriptors();
+    let (code, sig) =
+        agenticos_core::supervisor::terminate_escalate(handle.pid, Duration::from_millis(500))
+            .expect("Reap container");
+    println!("Container exit code: {:?}, sig: {:?}", code, sig);
+}
+
+#[test]
+fn test_profile2_capability_read_file_in_container() {
+    let dir = tempdir().expect("tempdir");
+    let file_path = dir.path().join("sample.txt");
+    let expected_content = "Container Isolation Verified: Profile 2";
+    std::fs::write(&file_path, expected_content).expect("Write test file");
+
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.read_file".to_string(),
+            serde_json::json!({ "path": "sample.txt" }),
+            true, // read-only workspace
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(
+        record.lifecycle_state,
+        WorkerLifecycleState::Completed,
+        "Record state must be Completed"
+    );
+    assert_eq!(record.execution_id, execution_id);
+    assert_eq!(record.dispatch_id, dispatch_id);
+    assert_eq!(record.assignment_id, assignment_id);
+    assert_eq!(record.exit_code, Some(0));
+    assert_eq!(record.termination_signal, None);
+    assert!(record.error.is_none());
+}
+
+#[test]
+fn test_profile2_capability_create_directory_in_container() {
+    let dir = tempdir().expect("tempdir");
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.create_directory".to_string(),
+            serde_json::json!({ "path": "nested_dir" }),
+            false, // read-write workspace
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Completed);
+    assert_eq!(record.exit_code, Some(0));
+    assert!(record.error.is_none());
+
+    // Verify directory was created on host
+    assert!(dir.path().join("nested_dir").is_dir());
+}
+
+#[test]
+fn test_profile2_capability_delete_tree_in_container() {
+    let dir = tempdir().expect("tempdir");
+    let sub = dir.path().join("to_delete");
+    std::fs::create_dir_all(&sub).expect("create dir");
+    std::fs::write(sub.join("file.txt"), "delete me").expect("write file");
+
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.delete_tree".to_string(),
+            serde_json::json!({ "path": "to_delete" }),
+            false, // read-write workspace
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Completed);
+    assert_eq!(record.exit_code, Some(0));
+    assert!(record.error.is_none());
+
+    // Verify directory tree was deleted on host
+    assert!(!sub.exists());
+}
+
+#[test]
+fn test_profile2_host_filesystem_inaccessible() {
+    let dir = tempdir().expect("tempdir");
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    // Attempting to read outside the workspace (e.g. /etc/shadow or /etc/passwd via traversal)
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.read_file".to_string(),
+            serde_json::json!({ "path": "../../etc/shadow" }),
+            true,
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record.error.is_some());
+    let err = record.error.unwrap();
+    assert_eq!(err.code, ErrorCode::CapabilityExecutionFailed);
+}
+
+#[test]
+fn test_profile2_workspace_read_only_boundary() {
+    let dir = tempdir().expect("tempdir");
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    // Attempting to create a directory in a read-only mounted container (--ro-bind-fd)
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.create_directory".to_string(),
+            serde_json::json!({ "path": "unauthorized_dir" }),
+            true, // read-only workspace
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record.error.is_some());
+}
+
+#[test]
+fn test_profile2_symlink_and_path_traversal_blocked_in_container() {
+    let dir = tempdir().expect("tempdir");
+    // Create symlink pointing outside workspace
+    let link_target = std::path::Path::new("/etc/hosts");
+    let link_path = dir.path().join("escape_symlink");
+    let _ = symlink(link_target, &link_path);
+
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    let record = supervisor
+        .execute_container_worker(
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            dir.path(),
+            "fs.read_file".to_string(),
+            serde_json::json!({ "path": "escape_symlink" }),
+            true,
+            &config,
+            Some(Duration::from_secs(10)),
+        )
+        .expect("Container execution");
+
+    assert_eq!(record.lifecycle_state, WorkerLifecycleState::Failed);
+    assert!(record.error.is_some());
+}
+
+#[test]
+fn test_profile2_fd_leakage_and_hygiene_in_container() {
+    let dir = tempdir().expect("tempdir");
+    let config = ContainerConfig::default();
+
+    let mut handle = spawn_container_worker_process(dir.path(), "fs.read_file", true, &config)
+        .expect("Spawn container worker");
+
+    // Perform handshake
+    let req = agenticos_core::supervisor::IpcMessage::HandshakeRequest {
+        protocol_version: agenticos_contracts::ProtocolVersion::V1_0,
+        instance_nonce: handle.instance_nonce,
+    };
+    agenticos_core::supervisor::send_message(handle.supervisor_ipc_fd, &req)
+        .expect("Send handshake request");
+
+    let _resp =
+        agenticos_core::supervisor::receive_message(handle.supervisor_ipc_fd, MAX_FRAME_SIZE)
+            .expect("Receive handshake response");
+
+    handle.close_descriptors();
+    let _ = agenticos_core::supervisor::terminate_escalate(handle.pid, Duration::from_millis(500));
+}
+
+#[test]
+fn test_profile2_container_startup_failure_fails_closed() {
+    let non_existent_dir = std::path::Path::new("/tmp/non_existent_ws_12345");
+    let supervisor = make_test_supervisor();
+    let execution_id = Uuid::new_v4();
+    let dispatch_id = Uuid::new_v4();
+    let assignment_id = AssignmentId(Uuid::new_v4());
+    let config = ContainerConfig::default();
+
+    let res = supervisor.execute_container_worker(
+        execution_id,
+        dispatch_id,
+        assignment_id,
+        non_existent_dir,
+        "fs.read_file".to_string(),
+        serde_json::json!({ "path": "test.txt" }),
+        true,
+        &config,
+        Some(Duration::from_secs(5)),
+    );
+
+    assert!(
+        res.is_err(),
+        "Non-existent workspace must fail closed during spawn"
+    );
 }

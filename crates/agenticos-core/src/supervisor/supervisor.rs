@@ -6,7 +6,7 @@ use super::ipc::{
     receive_message, send_message, IpcMessage, DEFAULT_MAX_OUTPUT_SIZE, MAX_FRAME_SIZE,
 };
 use super::lifecycle::{WorkerExecutionRecord, WorkerFailureReason, WorkerLifecycleState};
-use super::process::{spawn_worker_process, terminate_escalate};
+use super::process::{reap_child_process, spawn_worker_process, terminate_escalate, WorkerHandle};
 use super::ring_buffer::RollingLogBuffer;
 use crate::agent::observer::LinuxProcfsObserver;
 use crate::agent::AssignmentId;
@@ -150,14 +150,66 @@ impl CapabilitySupervisor {
     where
         F: FnOnce(RawFd, Uuid) -> i32 + Send + 'static,
     {
+        let handle = spawn_worker_process(child_entry)?;
+        self.execute_handle(
+            handle,
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            capability_id,
+            arguments,
+            timeout,
+        )
+    }
+
+    /// Executes a Profile 2 containerized capability worker inside Bubblewrap with cgroup v2.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_container_worker(
+        &self,
+        execution_id: Uuid,
+        dispatch_id: Uuid,
+        assignment_id: AssignmentId,
+        workspace_path: &std::path::Path,
+        capability_id: String,
+        arguments: serde_json::Value,
+        read_only: bool,
+        container_config: &crate::sandbox::container::ContainerConfig,
+        timeout: Option<Duration>,
+    ) -> Result<WorkerExecutionRecord, SupervisorError> {
+        let handle = crate::sandbox::container::spawn_container_worker_process(
+            workspace_path,
+            &capability_id,
+            read_only,
+            container_config,
+        )?;
+        self.execute_handle(
+            handle,
+            execution_id,
+            dispatch_id,
+            assignment_id,
+            capability_id,
+            arguments,
+            timeout,
+        )
+    }
+
+    /// Executes a pre-spawned worker handle through the complete supervisor lifecycle.
+    #[allow(clippy::too_many_arguments)]
+    pub fn execute_handle(
+        &self,
+        handle: WorkerHandle,
+        execution_id: Uuid,
+        dispatch_id: Uuid,
+        assignment_id: AssignmentId,
+        capability_id: String,
+        arguments: serde_json::Value,
+        timeout: Option<Duration>,
+    ) -> Result<WorkerExecutionRecord, SupervisorError> {
         let wall_clock_limit = timeout
             .unwrap_or(self.config.default_timeout)
             .min(self.config.max_timeout);
 
         let start_time = Instant::now();
-
-        // Step 1: Spawn worker process
-        let handle = spawn_worker_process(child_entry)?;
         let child_pid = handle.pid;
         let expected_nonce = handle.instance_nonce;
 
@@ -210,6 +262,8 @@ impl CapabilitySupervisor {
                 Ok(msg) => msg,
                 Err(e) => {
                     let (code, sig) = terminate_escalate(child_pid, self.config.grace_period)?;
+                    drain_pipe_to_eof(handle.stdout_pipe_read, &mut stdout_log);
+                    drain_pipe_to_eof(handle.stderr_pipe_read, &mut stderr_log);
                     let reason = if sig.is_some() {
                         WorkerFailureReason::SignalTermination
                     } else if code.is_some() && code != Some(0) {
@@ -472,7 +526,22 @@ impl CapabilitySupervisor {
         if let Some(msg) = invocation_response {
             match msg {
                 IpcMessage::InvocationResponse { status, error, .. } => {
-                    let (exit_code, sig) = terminate_escalate(child_pid, self.config.grace_period)?;
+                    let mut clean_status = reap_child_process(child_pid, false)?;
+                    if clean_status.is_none() {
+                        let poll_interval = Duration::from_millis(10);
+                        let wait_start = Instant::now();
+                        while wait_start.elapsed() < Duration::from_millis(200) {
+                            std::thread::sleep(poll_interval);
+                            if let Some(st) = reap_child_process(child_pid, false)? {
+                                clean_status = Some(st);
+                                break;
+                            }
+                        }
+                    }
+                    let (exit_code, sig) = match clean_status {
+                        Some(s) => s,
+                        None => terminate_escalate(child_pid, self.config.grace_period)?,
+                    };
                     drain_pipe_to_eof(handle.stdout_pipe_read, &mut stdout_log);
                     drain_pipe_to_eof(handle.stderr_pipe_read, &mut stderr_log);
                     let final_state = match status {

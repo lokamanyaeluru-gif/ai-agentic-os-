@@ -1,16 +1,25 @@
-//! Layer 8 Sandbox & Minimal Process Isolation Engine (Profile 1).
+//! Layer 8 Sandbox & Isolation Engine (Profile 1 Process Isolation & Profile 2 Container Isolation).
 //!
 //! Provides Landlock LSM access confinement, openat2 filesystem traversal prevention,
-//! Seccomp-BPF system call filtering, and isolated worker execution.
+//! Seccomp-BPF system call filtering, Bubblewrap namespace isolation, and cgroup v2 resource control.
 
+pub mod bwrap;
+pub mod cgroup;
 pub mod confinement;
+pub mod container;
 pub mod error;
 pub mod landlock;
 pub mod openat2;
 pub mod seccomp;
 pub mod worker;
 
+pub use bwrap::{
+    find_approved_bubblewrap, BubblewrapBinary, BubblewrapCommandBuilder, BubblewrapVersion,
+    BWRAP_MIN_APPROVED_VERSION,
+};
+pub use cgroup::{probe_cgroup_v2, CgroupConfig, PROFILE2_MEMORY_MAX_BYTES, PROFILE2_TASKS_MAX};
 pub use confinement::{enter_profile1_confinement, ConfinedWorkspace};
+pub use container::{find_worker_binary, spawn_container_worker_process, ContainerConfig};
 pub use error::SandboxError;
 pub use landlock::{
     fs_access_mask_for_abi, net_access_mask_for_abi, probe_landlock_abi, probe_landlock_errata,
@@ -32,4 +41,4 @@ pub use seccomp::{
     PROFILE1_ALLOWED_SYSCALLS, PROFILE1_CRITICAL_FORBIDDEN_SYSCALLS, PROFILE1_DENIED_SYSCALLS,
     SECCOMP_RET_ALLOW, SECCOMP_RET_ERRNO, SECCOMP_RET_KILL_PROCESS,
 };
-pub use worker::run_profile1_worker;
+pub use worker::{run_profile1_worker, run_profile2_worker};

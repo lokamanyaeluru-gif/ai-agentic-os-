@@ -63,6 +63,26 @@ pub enum SandboxError {
     /// Capability invocation within sandbox failed.
     #[error("Capability invocation failed: {0}")]
     CapabilityExecutionFailed(String),
+
+    /// Bubblewrap binary was not found at specified or probed locations.
+    #[error("Bubblewrap executable not found: {0}")]
+    BubblewrapNotFound(String),
+
+    /// Bubblewrap binary is non-compliant with AgenticOS security baseline.
+    #[error("Bubblewrap non-compliant with security baseline: {0}")]
+    BubblewrapNonCompliant(String),
+
+    /// Bubblewrap process execution failed.
+    #[error("Bubblewrap execution failed: {0}")]
+    BubblewrapExecutionFailed(String),
+
+    /// Cgroup v2 resource control setup failed.
+    #[error("Cgroup v2 resource control failed: {0}")]
+    CgroupControlFailed(String),
+
+    /// Container startup failed.
+    #[error("Container startup failed: {0}")]
+    ContainerStartupFailed(String),
 }
 
 impl SandboxError {
@@ -76,7 +96,12 @@ impl SandboxError {
             | Self::LandlockAddRuleFailed(_)
             | Self::LandlockRestrictSelfFailed(_)
             | Self::SeccompFilterBuildFailed(_)
-            | Self::SeccompInstallationFailed(_) => ErrorPayload::new(
+            | Self::SeccompInstallationFailed(_)
+            | Self::BubblewrapNotFound(_)
+            | Self::BubblewrapNonCompliant(_)
+            | Self::BubblewrapExecutionFailed(_)
+            | Self::CgroupControlFailed(_)
+            | Self::ContainerStartupFailed(_) => ErrorPayload::new(
                 ErrorCode::SandboxInitializationFailed,
                 self.to_string(),
                 "SandboxEngine",

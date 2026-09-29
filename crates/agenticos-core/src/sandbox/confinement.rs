@@ -90,7 +90,8 @@ pub fn enter_profile1_confinement(
         )));
     }
 
-    // Step 2: Open workspace directory with O_PATH | O_DIRECTORY | O_CLOEXEC
+    // Step 2: Open temporary workspace directory handle with O_PATH | O_DIRECTORY | O_CLOEXEC
+    // solely to build the Landlock PATH_BENEATH rule.
     let canonical_path = workspace_path.canonicalize().map_err(|e| {
         SandboxError::WorkspaceAccessFailed(format!("Canonicalization failed: {e}"))
     })?;
@@ -103,34 +104,54 @@ pub fn enter_profile1_confinement(
         SandboxError::WorkspaceAccessFailed("Path contains interior null bytes".to_string())
     })?;
 
-    let workspace_dirfd = unsafe {
+    let temp_o_path_dirfd = unsafe {
         libc::open(
             c_path.as_ptr(),
             libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
         )
     };
 
-    if workspace_dirfd < 0 {
+    if temp_o_path_dirfd < 0 {
         let err = std::io::Error::last_os_error();
         return Err(SandboxError::WorkspaceAccessFailed(format!(
-            "Failed opening workspace '{path_str}': {err}"
+            "Failed opening temporary workspace O_PATH '{path_str}': {err}"
         )));
     }
 
     // Step 3: Apply Landlock filesystem containment with capability-specific allowed mask
-    if let Err(e) = restrict_to_workspace_for_capability(workspace_dirfd, capability_id) {
-        unsafe { libc::close(workspace_dirfd) };
-        return Err(e);
-    }
+    let landlock_res = restrict_to_workspace_for_capability(temp_o_path_dirfd, capability_id);
+
+    // CRITICAL SECURITY INVARIANT (Phase 4.3 Requirement 3):
+    // The temporary O_PATH FD used to create the Landlock PATH_BENEATH rule MUST NOT
+    // become a long-lived pre-confinement functional data FD.
+    // Explicitly close it immediately after landlock_restrict_self!
+    unsafe { libc::close(temp_o_path_dirfd) };
+
+    landlock_res?;
 
     // Step 4: Apply Seccomp-BPF system call filter
-    if let Err(e) = apply_profile1_seccomp(kill_on_seccomp_violation) {
-        unsafe { libc::close(workspace_dirfd) };
-        return Err(e);
+    apply_profile1_seccomp(kill_on_seccomp_violation)?;
+
+    // Step 5: Post-confinement: Open the workspace directory freshly under active Landlock
+    // and Seccomp restrictions. All subsequent capability I/O operations strictly use this
+    // post-confinement descriptor.
+    let post_confinement_dirfd = unsafe {
+        libc::openat(
+            libc::AT_FDCWD,
+            c_path.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC,
+        )
+    };
+
+    if post_confinement_dirfd < 0 {
+        let err = std::io::Error::last_os_error();
+        return Err(SandboxError::WorkspaceAccessFailed(format!(
+            "Failed opening post-confinement workspace '{path_str}': {err}"
+        )));
     }
 
     Ok(ConfinedWorkspace {
-        workspace_dirfd,
+        workspace_dirfd: post_confinement_dirfd,
         workspace_path: canonical_path,
     })
 }
